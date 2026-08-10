@@ -17,7 +17,7 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.text_input("🔒 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
+        st.text_input("🔒 광고주 전용 대시보드입니다. 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
         st.text_input("❌ 비밀번호가 틀렸습니다. 다시 입력하세요.", type="password", on_change=password_entered, key="password")
@@ -231,7 +231,7 @@ def load_data():
     has_cellti = category_text.str.contains('셀티아이', case=False, regex=False)
     has_triad = category_text.str.contains('트리어드', case=False, regex=False)
 
-    # 둘 중 하나만 명확히 태깅된 행만 직접 귀속
+    # 둘 중 하나만 명확히 태깅된 행만 직접 분류
     cellti_mask = has_cellti & ~has_triad
     triad_mask = has_triad & ~has_cellti
 
@@ -723,7 +723,7 @@ col_funnel2.plotly_chart(fig_fret, use_container_width=True)
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 주요 매체 Top 5 (매체코드 기준 귀속매출 포함)
+# 주요 매체 Top 5 (매체코드 기준 매출 포함)
 # ---------------------------------------------------------
 st.markdown("#### 🏆 주요 매체 Top 5")
 col_top1, col_top2, col_top3 = st.columns(3)
@@ -793,7 +793,7 @@ fig_top_sales = px.bar(
     x='총매출액',
     y='매체',
     orientation='h',
-    title='3. 매체 귀속 매출 기준',
+    title='3. 매체별 매출 기준',
     text_auto='.2s',
     color_discrete_sequence=['#F48FB1'],
     custom_data=['증감텍스트']
@@ -801,7 +801,7 @@ fig_top_sales = px.bar(
 fig_top_sales.update_traces(
     hovertemplate=(
         "<b>%{y}</b><br>"
-        "귀속 매출: ₩%{x:,.0f}<br>"
+        "매출: ₩%{x:,.0f}<br>"
         "전기간 대비: %{customdata[0]}"
         "<extra></extra>"
     )
@@ -820,9 +820,9 @@ col_top3.plotly_chart(
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 매체별 점유율 (유입 / 귀속매출)
+# 매체별 점유율 (유입 / 매출)
 # ---------------------------------------------------------
-st.markdown("#### 🎯 매체별 점유율 (유입 및 귀속 매출)")
+st.markdown("#### 🎯 매체별 점유율 (유입 및 매출)")
 df_media_eff = (
     df_current.groupby('매체')[
         ['총방문수', '총구매수', '총매출액']
@@ -863,7 +863,7 @@ with col_pie2:
         values='총매출액',
         names='매체',
         hole=0.4,
-        title='매체 귀속 매출 점유율',
+        title='매체별 매출 점유율',
         color_discrete_sequence=px.colors.sequential.OrRd
     )
     fig_pie_sales.update_traces(
@@ -872,7 +872,7 @@ with col_pie2:
         showlegend=False,
         hovertemplate=(
             "<b>%{label}</b><br>"
-            "귀속 매출: ₩%{value:,.0f}<br>"
+            "매출: ₩%{value:,.0f}<br>"
             "비중: %{percent}"
             "<extra></extra>"
         )
@@ -903,7 +903,7 @@ df_curr_media = (
     .reset_index()
     .rename(columns={
         '총방문수': '이번_유입수',
-        '총매출액': '이번_귀속매출'
+        '총매출액': '이번_매출'
     })
 )
 
@@ -915,7 +915,7 @@ df_prev_media = (
     .reset_index()
     .rename(columns={
         '총방문수': '이전_유입수',
-        '총매출액': '이전_귀속매출'
+        '총매출액': '이전_매출'
     })
 )
 
@@ -971,20 +971,20 @@ df_compare['유입_증감률(%)'] = df_compare.apply(
 )
 
 df_compare['매출_증감량'] = (
-    df_compare['이번_귀속매출']
-    - df_compare['이전_귀속매출']
+    df_compare['이번_매출']
+    - df_compare['이전_매출']
 )
 
 df_compare['매출_증감률(%)'] = df_compare.apply(
     lambda r: (
         (
-            r['이번_귀속매출']
-            - r['이전_귀속매출']
+            r['이번_매출']
+            - r['이전_매출']
         )
-        / r['이전_귀속매출']
+        / r['이전_매출']
         * 100
     )
-    if r['이전_귀속매출'] != 0
+    if r['이전_매출'] != 0
     else 0,
     axis=1
 )
@@ -996,12 +996,12 @@ df_compare = df_compare[
         '이전_유입수',
         '이번_유입수',
         '유입_증감률(%)',
-        '이전_귀속매출',
-        '이번_귀속매출',
+        '이전_매출',
+        '이번_매출',
         '매출_증감률(%)'
     ]
 ].sort_values(
-    by='이번_귀속매출',
+    by='이번_매출',
     ascending=False
 )
 
@@ -1030,12 +1030,12 @@ st.dataframe(
             "유입 증감률",
             format="%.1f%%"
         ),
-        "이전_귀속매출": st.column_config.NumberColumn(
-            "이전 귀속매출",
+        "이전_매출": st.column_config.NumberColumn(
+            "이전 매출",
             format="₩%d"
         ),
-        "이번_귀속매출": st.column_config.NumberColumn(
-            "이번 귀속매출",
+        "이번_매출": st.column_config.NumberColumn(
+            "이번 매출",
             format="₩%d"
         ),
         "매출_증감률(%)": st.column_config.NumberColumn(
