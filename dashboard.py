@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import timedelta
+import urllib.parse  # ⬅️ NEW: 한글 탭 이름을 인터넷 주소로 변환해주는 도구 추가!
 
 # ---------------------------------------------------------
 # 1. 페이지 및 기본 설정
@@ -21,7 +22,7 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.text_input("🔒 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
+        st.text_input("🔒 광고주 전용 대시보드입니다. 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
         st.text_input("❌ 비밀번호가 틀렸습니다. 다시 입력하세요.", type="password", on_change=password_entered, key="password")
@@ -64,9 +65,10 @@ def load_data():
     raw_url = st.secrets["gsheet_url"]
     sheet_id = raw_url.split("/d/")[1].split("/")[0]
     
-    # 2. 탭(시트) 이름으로 데이터를 읽어오는 함수
+    # 2. 탭(시트) 이름으로 데이터를 읽어오는 함수 (🚨 한글 인코딩 추가 적용!)
     def get_csv_url(sheet_name):
-        return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
+        encoded_name = urllib.parse.quote(sheet_name) # 한글을 인터넷 주소용으로 변환
+        return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}"
     
     # 3. 구글 시트에서 실시간으로 데이터 읽어오기
     df_total = pd.read_csv(get_csv_url('전체'))
