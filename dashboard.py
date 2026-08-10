@@ -4,16 +4,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import timedelta
 import urllib.parse 
-import gc  # 🌟 메모리 청소부 추가
+import gc
 
 # ---------------------------------------------------------
 # 1. 페이지 및 기본 설정
 # ---------------------------------------------------------
 st.set_page_config(page_title="셀로닉스 데이터 대시보드", layout="wide")
 
-# =========================================================
-# 🔒 보안: 대시보드 자체 비밀번호 설정
-# =========================================================
 def check_password():
     def password_entered():
         if st.session_state["password"] == "cellonix2026!":
@@ -23,7 +20,7 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.text_input("🔒 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
+        st.text_input("🔒 광고주 전용 대시보드입니다. 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
         st.text_input("❌ 비밀번호가 틀렸습니다. 다시 입력하세요.", type="password", on_change=password_entered, key="password")
@@ -32,7 +29,6 @@ def check_password():
 
 if not check_password():
     st.stop()
-# =========================================================
 
 # ---------------------------------------------------------
 # 2. UI CSS 설정
@@ -57,9 +53,10 @@ def calculate_delta(current_val, prev_val):
     return f"{((current_val - prev_val) / prev_val) * 100:.1f}%"
 
 # ---------------------------------------------------------
-# 3. 데이터 로드 및 전처리 (메모리 다이어트 적용)
+# 3. 데이터 로드 및 전처리 (🌟 극한의 메모리 최적화 적용)
 # ---------------------------------------------------------
-@st.cache_data(ttl=600)
+# max_entries=1 옵션으로 이전 데이터 캐시를 쌓아두지 않고 삭제하여 RAM 터짐 방지
+@st.cache_data(ttl=600, max_entries=1)
 def load_data():
     raw_url = st.secrets["gsheet_url"]
     sheet_id = raw_url.split("/d/")[1].split("/")[0]
@@ -67,9 +64,16 @@ def load_data():
     def get_csv_url(sheet_name):
         encoded_name = urllib.parse.quote(sheet_name)
         return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}"
+        
+    # 데이터 용량을 획기적으로 줄이는 압축 함수
+    def optimize_memory(df):
+        for col in df.select_dtypes(include=['float64', 'int64']).columns:
+            df[col] = pd.to_numeric(df[col], downcast='float')
+        return df
     
-    # [1] 전체 데이터
+    # [1] 전체 데이터 읽기 및 압축
     df_total = pd.read_csv(get_csv_url('전체'))
+    df_total = optimize_memory(df_total)
     df_total['날짜'] = pd.to_datetime(df_total['날짜'], errors='coerce') 
     df_total['브랜드'] = '전체'
     df_total['인플루언서명'] = None
@@ -81,7 +85,7 @@ def load_data():
     mask_same_day = df_campaign['시작일'] == df_campaign['종료일']
     df_campaign.loc[mask_same_day, '종료일'] = df_campaign.loc[mask_same_day, '종료일'] + pd.Timedelta(days=1)
     
-    # [3] 정기구독 데이터 로드
+    # [3] 정기구독 데이터 (안전 로직)
     try:
         df_sub = pd.read_csv(get_csv_url('정기구독'))
         if '날짜' not in df_sub.columns:
@@ -104,19 +108,20 @@ def load_data():
     except Exception as e:
         df_sub = pd.DataFrame({'날짜': pd.to_datetime([]), '브랜드': [], '정기구독_매출액': []})
 
-    # [4] 셀티아이
+    # [4] 셀티아이 & 트리어드 읽기 및 압축
     df_cellti = pd.read_csv(get_csv_url('셀티아이'))
+    df_cellti = optimize_memory(df_cellti)
     df_cellti['날짜'] = pd.to_datetime(df_cellti['날짜'], errors='coerce')
     df_cellti['브랜드'] = '셀티아이'
     df_cellti['인플루언서명'] = None
     
-    # [5] 트리어드
     df_triad = pd.read_csv(get_csv_url('트리어드'))
+    df_triad = optimize_memory(df_triad)
     df_triad['날짜'] = pd.to_datetime(df_triad['날짜'], errors='coerce')
     df_triad['브랜드'] = '트리어드'
     df_triad['인플루언서명'] = None
     
-    # [6] 인플루언서 데이터 (전체 시트에서 추출)
+    # [5] 인플루언서 데이터 (전체 시트에서 추출)
     influencer_dfs = []
     str_cols = df_total.select_dtypes(include=['object']).columns
     is_meta_yt = df_total['매체'].astype(str).str.upper().isin(['META', '유튜브'])
@@ -151,28 +156,18 @@ def load_data():
                 else: df_inf['브랜드'] = '트리어드 인플루언서' 
                 influencer_dfs.append(df_inf)
     
-    # [7] 모든 데이터 하나로 병합
+    # [6] 메인 데이터 병합
     df_main = pd.concat([df_total, df_cellti, df_triad] + influencer_dfs, ignore_index=True)
     
-    # 🌟 [핵심] 메모리 다이어트 (Memory Optimization) 🌟
-    # 1. 병합 후 쓸모없어진 개별 덩어리 삭제
-    del df_total
-    del df_cellti
-    del df_triad
-    del influencer_dfs
-    gc.collect() # 찌꺼기 메모리 청소
+    # 🌟 병합 후 불필요한 개별 데이터는 즉시 삭제하여 메모리 반환
+    del df_total, df_cellti, df_triad, influencer_dfs
+    gc.collect()
     
-    # 2. 문자열(Object)을 가벼운 카테고리(Category) 형식으로 압축
+    # 🌟 용량이 큰 문자열(Object)을 아주 가벼운 카테고리로 2차 압축
     cat_cols = ['매체', '브랜드', '인플루언서명'] + [c for c in df_main.columns if 'CATEGORY' in c]
     for col in cat_cols:
         if col in df_main.columns:
             df_main[col] = df_main[col].astype('category')
-            
-    # 3. 불필요하게 큰 숫자 용량 줄이기 (Downcast)
-    num_cols = df_main.select_dtypes(include=['float64', 'int64']).columns
-    for col in num_cols:
-        df_main[col] = pd.to_numeric(df_main[col], downcast='float')
-    # 🌟 메모리 다이어트 끝 🌟
     
     df_main['총매출액'] = (
         df_main['신규방문_신규구매_매출액'].fillna(0) + df_main['신규방문_재구매_매출액'].fillna(0) + 
@@ -200,10 +195,8 @@ if not selected_brands:
     st.warning("👈 왼쪽 사이드바에서 분석할 브랜드를 하나 이상 선택해 주세요.")
     st.stop()
 
-# 1차 필터링
 df_filtered = df_all[df_all['브랜드'].isin(selected_brands)].copy()
 
-# 정기구독 데이터 필터링용 타겟 브랜드 산출
 sub_target_brands = set()
 if "전체" in selected_brands: sub_target_brands.update(["전체", "셀티아이", "트리어드"])
 else:
@@ -214,7 +207,6 @@ else:
 
 df_sub_filtered = df_sub_all[df_sub_all['브랜드'].isin(sub_target_brands)].copy() if sub_target_brands else df_sub_all.copy()
 
-# 2차 필터링: 인플루언서 추가/제거
 if any("인플루언서" in b for b in selected_brands):
     inf_list = df_filtered['인플루언서명'].dropna().unique().tolist()
     if inf_list:
@@ -225,7 +217,6 @@ if any("인플루언서" in b for b in selected_brands):
         df_filtered = df_filtered[mask_normal | mask_selected_inf]
         st.sidebar.markdown("---")
 
-# 3차 필터링: 날짜
 min_date = df_all['날짜'].min().date()
 max_date = df_all['날짜'].max().date()
 default_start_date = max_date.replace(day=1) 
@@ -234,14 +225,12 @@ date_range = st.sidebar.date_input("🗓️ 조회 기간", value=(default_start
 if len(date_range) == 2: start_date, end_date = date_range
 else: start_date, end_date = default_start_date, max_date 
 
-# 4차 필터링: 매체
 media_options = ["전체"] + list(df_all['매체'].dropna().unique())
 selected_media = st.sidebar.multiselect("📺 매체 선택", media_options, default=["전체"])
 
 if "전체" not in selected_media:
     df_filtered = df_filtered[df_filtered['매체'].isin(selected_media)]
 
-# 메인 및 구독 데이터 날짜 분리
 df_current = df_filtered[(df_filtered['날짜'].dt.date >= start_date) & (df_filtered['날짜'].dt.date <= end_date)]
 df_sub_current = df_sub_filtered[(df_sub_filtered['날짜'].dt.date >= start_date) & (df_sub_filtered['날짜'].dt.date <= end_date)]
 
@@ -384,64 +373,4 @@ fig_top_signup = px.bar(top_signup, x='총회원가입', y='매체', orientation
 fig_top_signup.update_layout(template="plotly_white", yaxis={'categoryorder':'total ascending'}, margin=dict(t=30, l=0, r=0, b=0), height=250)
 col_top2.plotly_chart(fig_top_signup, use_container_width=True)
 
-top_buy = df_current.groupby('매체')['총구매수'].sum().reset_index().sort_values(by='총구매수', ascending=False).head(5)
-fig_top_buy = px.bar(top_buy, x='총구매수', y='매체', orientation='h', title='3. 구매 기준', text_auto='.0f', color_discrete_sequence=['#F48FB1'])
-fig_top_buy.update_layout(template="plotly_white", yaxis={'categoryorder':'total ascending'}, margin=dict(t=30, l=0, r=0, b=0), height=250)
-col_top3.plotly_chart(fig_top_buy, use_container_width=True)
-
-st.markdown("---")
-
-# =========================================================
-# [순서 5] 매체별 점유율 (파이차트)
-# =========================================================
-st.markdown("#### 🎯 매체별 점유율 (유입 및 전환)")
-df_media_eff = df_current.groupby('매체')[['총방문수', '총구매수']].sum().reset_index().sort_values('총방문수', ascending=False)
-col_pie1, col_pie2 = st.columns(2)
-
-with col_pie1:
-    fig_pie_visit = px.pie(df_media_eff, values='총방문수', names='매체', hole=0.4, title='유입 점유율 (트래픽 비중)', color_discrete_sequence=px.colors.sequential.Teal)
-    fig_pie_visit.update_traces(textposition='inside', textinfo='percent+label', showlegend=False)
-    fig_pie_visit.update_layout(template="plotly_white", margin=dict(t=40, b=0, l=0, r=0), height=350)
-    st.plotly_chart(fig_pie_visit, use_container_width=True)
-
-with col_pie2:
-    fig_pie_conv = px.pie(df_media_eff, values='총구매수', names='매체', hole=0.4, title='전환 점유율 (구매 비중)', color_discrete_sequence=px.colors.sequential.OrRd)
-    fig_pie_conv.update_traces(textposition='inside', textinfo='percent+label', showlegend=False)
-    fig_pie_conv.update_layout(template="plotly_white", margin=dict(t=40, b=0, l=0, r=0), height=350)
-    st.plotly_chart(fig_pie_conv, use_container_width=True)
-
-st.markdown("---")
-
-# =========================================================
-# [순서 6] 매체별 증감 추이 및 전체 현황표
-# =========================================================
-st.markdown("#### 🔄 비교 기간 대비 매체 운영 현황")
-st.caption("※ 설정된 기간과 직전 동일 기간을 비교합니다.")
-
-df_curr_media = df_current.groupby('매체')['총방문수'].sum().reset_index().rename(columns={'총방문수': '이번_유입수'})
-df_prev_media = df_prev.groupby('매체')['총방문수'].sum().reset_index().rename(columns={'총방문수': '이전_유입수'})
-df_compare = pd.merge(df_prev_media, df_curr_media, on='매체', how='outer').fillna(0)
-
-def get_media_status(row):
-    if row['이전_유입수'] == 0 and row['이번_유입수'] > 0: return "🆕 신규 진입"
-    elif row['이전_유입수'] > 0 and row['이번_유입수'] == 0: return "⏸️ 운영 중단"
-    elif row['이번_유입수'] > row['이전_유입수']: return "🔼 유입 증가"
-    elif row['이번_유입수'] < row['이전_유입수']: return "🔽 유입 감소"
-    else: return "▶️ 유지"
-
-df_compare['상태'] = df_compare.apply(get_media_status, axis=1)
-df_compare['증감량'] = df_compare['이번_유입수'] - df_compare['이전_유입수']
-df_compare['증감률(%)'] = df_compare.apply(lambda r: ((r['이번_유입수'] - r['이전_유입수']) / r['이전_유입수'] * 100) if r['이전_유입수'] != 0 else 0, axis=1)
-df_compare = df_compare[['상태', '매체', '이전_유입수', '이번_유입수', '증감량', '증감률(%)']].sort_values(by='이번_유입수', ascending=False)
-
-st.dataframe(
-    df_compare, use_container_width=True, hide_index=True,
-    column_config={
-        "상태": st.column_config.TextColumn("상태", width="medium"),
-        "매체": st.column_config.TextColumn("매체명", width="medium"),
-        "이전_유입수": st.column_config.NumberColumn("이전 기간 유입", format="%d"),
-        "이번_유입수": st.column_config.NumberColumn("이번 기간 유입", format="%d"),
-        "증감량": st.column_config.NumberColumn("증감량", format="%d"),
-        "증감률(%)": st.column_config.NumberColumn("증감률", format="%.1f%%")
-    }
-)
+top_buy = df_current.groupby('매체')['총구매수'].
