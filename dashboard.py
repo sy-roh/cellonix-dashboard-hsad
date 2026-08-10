@@ -55,18 +55,21 @@ def load_data():
     
     # -----------------------------------------------------
     # 정기구독 시트
-    # - 공식몰 실매출 중 셀티아이/트리어드 매출 원천
-    # - 신규구매 + 재구매 = 실매출
-    # - 정기구독 할인금액 = 별도 로그성 지표
+    # 실제 구글시트 구조:
+    # 날짜 / 요일 / 브랜드 / 신규 구매 / 재 구매 / 정기구독 할인금액
+    #
+    # 내부에서는 컬럼명의 공백/언더바를 제거해 표준화해서 사용합니다.
     # -----------------------------------------------------
     try:
         df_sub = pd.read_csv(get_csv_url('정기구독'))
 
-        # 헤더 위치 자동 보정
-        if '날짜' not in [str(c).strip() for c in df_sub.columns]:
+        # 혹시 첫 행이 실제 헤더가 아닌 경우 '날짜'가 있는 행을 헤더로 재설정
+        raw_cols = [str(c).strip() for c in df_sub.columns]
+        if not any(str(c).replace(' ', '') == '날짜' for c in raw_cols):
             mask = df_sub.astype(str).apply(
                 lambda x: x.str.contains('날짜', na=False)
             ).any(axis=1)
+
             if mask.any():
                 header_idx = mask.idxmax()
                 df_sub.columns = (
@@ -76,23 +79,62 @@ def load_data():
                     .tolist()
                 )
                 df_sub = df_sub.iloc[header_idx + 1:].reset_index(drop=True)
-        else:
-            df_sub.columns = [str(c).strip() for c in df_sub.columns]
 
+        # 컬럼명 표준화:
+        # "신규 구매" -> "신규구매"
+        # "재 구매" -> "재구매"
+        # "정기구독 할인금액" -> "정기구독할인금액"
+        def normalize_col_name(col):
+            return (
+                str(col)
+                .strip()
+                .replace(' ', '')
+                .replace('_', '')
+                .replace('\n', '')
+            )
+
+        rename_map = {
+            c: normalize_col_name(c)
+            for c in df_sub.columns
+        }
+        df_sub = df_sub.rename(columns=rename_map)
+
+        required_cols = [
+            '날짜',
+            '브랜드',
+            '신규구매',
+            '재구매',
+            '정기구독할인금액'
+        ]
+
+        missing_cols = [
+            c for c in required_cols
+            if c not in df_sub.columns
+        ]
+
+        if missing_cols:
+            raise ValueError(
+                "정기구독 시트에서 필요한 컬럼을 찾지 못했습니다: "
+                + ", ".join(missing_cols)
+                + " / 현재 컬럼: "
+                + ", ".join(map(str, df_sub.columns))
+            )
+
+        # 날짜
         df_sub['날짜'] = pd.to_datetime(
             df_sub['날짜'],
             errors='coerce'
         )
 
-        if '브랜드' not in df_sub.columns:
-            df_sub['브랜드'] = ''
-        else:
-            df_sub['브랜드'] = (
-                df_sub['브랜드']
-                .astype(str)
-                .str.strip()
-            )
+        # 브랜드명 공백 제거
+        df_sub['브랜드'] = (
+            df_sub['브랜드']
+            .astype(str)
+            .str.strip()
+            .str.replace(r'\s+', '', regex=True)
+        )
 
+        # 숫자형 변환
         def to_number(series):
             return pd.to_numeric(
                 series.astype(str).str.replace(
@@ -103,63 +145,44 @@ def load_data():
                 errors='coerce'
             ).fillna(0)
 
-        # 현재 구글시트 구조:
-        # 날짜 / 요일 / 브랜드 / 신규구매 / 재구매 / 정기구독 할인금액
-        required_sales_cols = ['신규구매', '재구매']
-
-        missing_cols = [
-            c for c in required_sales_cols
-            if c not in df_sub.columns
-        ]
-
-        if missing_cols:
-            raise ValueError(
-                "정기구독 시트에서 "
-                + ", ".join(missing_cols)
-                + " 컬럼을 찾지 못했습니다."
-            )
-
         df_sub['신규구매_실매출'] = to_number(
             df_sub['신규구매']
         )
+
         df_sub['재구매_실매출'] = to_number(
             df_sub['재구매']
         )
 
-        # 셀티아이 + 트리어드 실제 매출에 사용
+        df_sub['정기구독_금액'] = to_number(
+            df_sub['정기구독할인금액']
+        )
+
+        # 공식몰 실매출용:
+        # 신규 구매 + 재 구매
         df_sub['브랜드_실매출'] = (
             df_sub['신규구매_실매출']
             + df_sub['재구매_실매출']
         )
 
-        # 정기구독은 현재 시트의 '정기구독 할인금액' 사용
-        sub_discount_col = next(
-            (
-                c for c in df_sub.columns
-                if '정기구독' in str(c)
-                and '할인' in str(c)
-            ),
-            None
-        )
-
-        if sub_discount_col:
-            df_sub['정기구독_금액'] = to_number(
-                df_sub[sub_discount_col]
-            )
-        else:
-            df_sub['정기구독_금액'] = 0
+        # 날짜/브랜드가 없는 행 제거
+        df_sub = df_sub[
+            df_sub['날짜'].notna()
+            & df_sub['브랜드'].ne('')
+            & df_sub['브랜드'].ne('nan')
+        ].copy()
 
     except Exception as e:
-        st.warning(
-            f"정기구독 시트 로드 오류: {e}"
+        st.error(
+            "정기구독 시트를 읽지 못했습니다. "
+            f"오류: {e}"
         )
         df_sub = pd.DataFrame({
             '날짜': pd.to_datetime([]),
             '브랜드': [],
             '신규구매_실매출': [],
             '재구매_실매출': [],
-            '브랜드_실매출': [],
             '정기구독_금액': [],
+            '브랜드_실매출': [],
         })
 
     # -----------------------------------------------------
@@ -336,31 +359,24 @@ df_filtered = df_all[df_all['브랜드'].isin(effective_brands)].copy()
 def filter_actual_sales_by_brand(df_sub, brands):
     """
     정기구독 시트 브랜드 필터.
-    공식몰 실매출은 반드시 셀티아이/트리어드 개별 행을 우선 사용합니다.
-    시트에 '전체' 요약 행이 있더라도 중복 집계를 막기 위해 제외합니다.
+    전체 선택 시 셀티아이 + 트리어드를 사용합니다.
+    개별 브랜드 선택 시 해당 브랜드만 사용합니다.
     """
     if df_sub.empty:
         return df_sub.copy()
 
     if "전체" in brands:
-        individual = df_sub[
+        return df_sub[
             df_sub['브랜드'].isin(['셀티아이', '트리어드'])
         ].copy()
 
-        # 개별 브랜드 행이 정상적으로 존재하면 그것만 사용
-        if not individual.empty:
-            return individual
-
-        # 예외적으로 개별 행이 없을 때만 전체 행 사용
-        return df_sub[
-            df_sub['브랜드'] == '전체'
-        ].copy()
-
     target_brands = set()
+
     for b in brands:
         if "셀티아이" in b:
             target_brands.add("셀티아이")
-        elif "트리어드" in b:
+
+        if "트리어드" in b:
             target_brands.add("트리어드")
 
     if not target_brands:
@@ -375,12 +391,6 @@ df_sub_filtered = filter_actual_sales_by_brand(
     df_sub_all,
     effective_brands
 )
-
-# 공식몰 실매출용 '기타' 데이터
-# 매체 선택과 무관하게 날짜/브랜드 기준으로만 계산
-df_other_official = df_all[
-    df_all['브랜드'] == '기타'
-].copy()
 
 if any("인플루언서" in b for b in effective_brands):
     inf_list = df_filtered.get('인플루언서명', pd.Series()).dropna().unique().tolist()
@@ -404,11 +414,6 @@ df_sub_current = df_sub_filtered[
     & (df_sub_filtered['날짜'].dt.date <= end_date)
 ]
 
-df_other_current = df_other_official[
-    (df_other_official['날짜'].dt.date >= start_date)
-    & (df_other_official['날짜'].dt.date <= end_date)
-]
-
 duration = (end_date - start_date).days + 1
 prev_start_date = start_date - timedelta(days=duration)
 prev_end_date = start_date - timedelta(days=1)
@@ -416,11 +421,6 @@ df_prev = df_filtered[(df_filtered['날짜'].dt.date >= prev_start_date) & (df_f
 df_sub_prev = df_sub_filtered[
     (df_sub_filtered['날짜'].dt.date >= prev_start_date)
     & (df_sub_filtered['날짜'].dt.date <= prev_end_date)
-]
-
-df_other_prev = df_other_official[
-    (df_other_official['날짜'].dt.date >= prev_start_date)
-    & (df_other_official['날짜'].dt.date <= prev_end_date)
 ]
 
 st.title(f"📈 공식몰 성과 대시보드 ({' + '.join(selected_brands) if len(selected_brands) <= 2 else '종합'})")
@@ -450,16 +450,23 @@ st.markdown("<hr style='margin:0.5rem 0'>", unsafe_allow_html=True)
 # ---------------------------------------------------------
 # 매출 지표
 #
-# [공식몰 실매출]
-# 정기구독 시트의 셀티아이 + 트리어드 실매출
-# + 전체 시트의 기타 매출
+# 1) 공식몰 실매출
+#    = 정기구독 시트의 셀티아이 + 트리어드
+#      (신규 구매 + 재 구매)
 #
-# [로그 기준 매출]
-# 전체 시트의 신규방문 매출 / 재방문 매출
-# + 정기구독 시트의 정기구독 할인금액
+# 2) 로그 신규 매출
+#    = 전체 시트 신규방문 구매 매출
+#
+# 3) 로그 재방문 매출
+#    = 전체 시트 재방문 구매 매출
+#
+# 4) 정기구독
+#    = 정기구독 시트의 트리어드 '정기구독 할인금액'
 # ---------------------------------------------------------
 
-# 1. 로그 기준 신규 / 재방문 매출
+# -------------------------
+# 로그 기준 신규 / 재방문
+# -------------------------
 cur_log_new_rev = (
     df_current['신규방문_신규구매_매출액'].sum()
     + df_current['신규방문_재구매_매출액'].sum()
@@ -480,85 +487,58 @@ prev_log_return_rev = (
     + df_prev['재방문_재구매_매출액'].sum()
 )
 
-# 2. 정기구독 시트의 셀티아이 + 트리어드 실제 매출
-actual_sales_brands = ['셀티아이', '트리어드']
-
-cur_cellti_triad_actual = df_sub_current[
-    df_sub_current['브랜드'].isin(actual_sales_brands)
-]['브랜드_실매출'].sum()
-
-prev_cellti_triad_actual = df_sub_prev[
-    df_sub_prev['브랜드'].isin(actual_sales_brands)
-]['브랜드_실매출'].sum()
-
-# 개별 브랜드 선택 시 해당 브랜드만 실매출에 포함
-if "전체" not in effective_brands:
-    actual_target_brands = set()
+# -------------------------
+# 공식몰 실매출
+# 정기구독 시트 기준
+# -------------------------
+if "전체" in effective_brands:
+    official_target_brands = ['셀티아이', '트리어드']
+else:
+    official_target_brands = []
 
     for b in effective_brands:
-        if "셀티아이" in b:
-            actual_target_brands.add("셀티아이")
-        if "트리어드" in b:
-            actual_target_brands.add("트리어드")
+        if "셀티아이" in b and "셀티아이" not in official_target_brands:
+            official_target_brands.append("셀티아이")
 
-    if actual_target_brands:
-        cur_cellti_triad_actual = df_sub_current[
-            df_sub_current['브랜드'].isin(actual_target_brands)
-        ]['브랜드_실매출'].sum()
+        if "트리어드" in b and "트리어드" not in official_target_brands:
+            official_target_brands.append("트리어드")
 
-        prev_cellti_triad_actual = df_sub_prev[
-            df_sub_prev['브랜드'].isin(actual_target_brands)
-        ]['브랜드_실매출'].sum()
-    else:
-        cur_cellti_triad_actual = 0
-        prev_cellti_triad_actual = 0
+cur_official_actual = df_sub_current[
+    df_sub_current['브랜드'].isin(official_target_brands)
+]['브랜드_실매출'].sum()
 
-# 3. 전체 시트의 기타 실매출
-# 전체 선택 또는 기타 선택일 때만 포함
-include_other_actual = (
+prev_official_actual = df_sub_prev[
+    df_sub_prev['브랜드'].isin(official_target_brands)
+]['브랜드_실매출'].sum()
+
+# -------------------------
+# 정기구독
+# 트리어드만 집계
+# -------------------------
+show_triad_subscription = (
     "전체" in effective_brands
-    or "기타" in effective_brands
+    or any("트리어드" in b for b in effective_brands)
 )
 
-cur_other_actual = (
-    df_other_current['총매출액'].sum()
-    if include_other_actual
-    else 0
-)
+if show_triad_subscription:
+    cur_subscription_log = df_sub_current[
+        df_sub_current['브랜드'] == '트리어드'
+    ]['정기구독_금액'].sum()
 
-prev_other_actual = (
-    df_other_prev['총매출액'].sum()
-    if include_other_actual
-    else 0
-)
-
-# 공식몰 실매출
-cur_official_actual = (
-    cur_cellti_triad_actual
-    + cur_other_actual
-)
-
-prev_official_actual = (
-    prev_cellti_triad_actual
-    + prev_other_actual
-)
-
-# 4. 로그 기준 정기구독
-# 현재 구조상 트리어드만 사용
-cur_subscription_log = df_sub_current[
-    df_sub_current['브랜드'] == '트리어드'
-]['정기구독_금액'].sum()
-
-prev_subscription_log = df_sub_prev[
-    df_sub_prev['브랜드'] == '트리어드'
-]['정기구독_금액'].sum()
+    prev_subscription_log = df_sub_prev[
+        df_sub_prev['브랜드'] == '트리어드'
+    ]['정기구독_금액'].sum()
+else:
+    cur_subscription_log = 0
+    prev_subscription_log = 0
 
 st.markdown("#### 💰 매출 요약")
 
 st.caption(
-    "※ 공식몰 실매출 = 정기구독 시트의 셀티아이·트리어드 "
-    "(신규구매 + 재구매) + 전체 시트의 기타 매출 / "
-    "로그 신규·재방문 매출은 전체 시트의 매체코드 기준입니다."
+    "※ 공식몰 실매출은 정기구독 시트의 셀티아이·트리어드 "
+    "'신규 구매 + 재 구매' 합계입니다. "
+    "로그 신규·재방문 매출은 전체 시트의 매체 로그 기준이며, "
+    "정기구독은 트리어드의 '정기구독 할인금액'입니다."
 )
 
 m1, m2, m3, m4 = st.columns(4)
@@ -571,8 +551,8 @@ m1.metric(
         prev_official_actual
     ),
     help=(
-        "셀티아이·트리어드: 정기구독 시트의 신규구매+재구매 / "
-        "기타: 전체 시트 매출"
+        "정기구독 시트 기준: "
+        "셀티아이 + 트리어드의 신규 구매 + 재 구매"
     )
 )
 
@@ -583,7 +563,7 @@ m2.metric(
         cur_log_new_rev,
         prev_log_new_rev
     ),
-    help="전체 시트의 신규방문 기준 매출"
+    help="전체 시트의 신규방문 구매 매출"
 )
 
 m3.metric(
@@ -593,7 +573,7 @@ m3.metric(
         cur_log_return_rev,
         prev_log_return_rev
     ),
-    help="전체 시트의 재방문 기준 매출"
+    help="전체 시트의 재방문 구매 매출"
 )
 
 m4.metric(
@@ -604,8 +584,8 @@ m4.metric(
         prev_subscription_log
     ),
     help=(
-        "정기구독 시트의 '정기구독 할인금액' 기준. "
-        "현재 트리어드만 집계합니다."
+        "정기구독 시트의 트리어드 "
+        "'정기구독 할인금액' 합계"
     )
 )
 
