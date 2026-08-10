@@ -50,7 +50,7 @@ def calculate_delta(current_val, prev_val):
     return f"{((current_val - prev_val) / prev_val) * 100:.1f}%"
 
 # ---------------------------------------------------------
-# 3. 데이터 로드 (코드 단순화 및 명확한 에러 캐치)
+# 3. 데이터 로드 및 전처리 (무한로딩 유발 코드 완벽 제거)
 # ---------------------------------------------------------
 @st.cache_data(ttl=600, max_entries=1)
 def load_data():
@@ -66,39 +66,60 @@ def load_data():
             df[col] = pd.to_numeric(df[col], downcast='float')
         return df
     
+    # [1] 전체 데이터
     df_total = optimize_memory(pd.read_csv(get_csv_url('전체')))
     df_total['날짜'] = pd.to_datetime(df_total['날짜'], errors='coerce') 
     df_total['브랜드'] = '전체'
     
+    # [2] 캠페인 데이터
     df_campaign = pd.read_csv(get_csv_url('캠페인'))
     df_campaign['시작일'] = pd.to_datetime(df_campaign['시작일'], errors='coerce')
     df_campaign['종료일'] = pd.to_datetime(df_campaign['종료일'], errors='coerce')
-    df_campaign.loc[df_campaign['시작일'] == df_campaign['종료일'], '종료일'] += pd.Timedelta(days=1)
+    mask_same_day = df_campaign['시작일'] == df_campaign['종료일']
+    df_campaign.loc[mask_same_day, '종료일'] = df_campaign.loc[mask_same_day, '종료일'] + pd.Timedelta(days=1)
     
-    # 🌟 정기구독 데이터 직관적 로직 🌟
-    df_sub = pd.read_csv(get_csv_url('정기구독'))
-    
-    # 만약 엑셀 첫 줄에 '브랜드별_매출통계'가 있어서 날짜 열이 밀렸다면 한 칸 위로 올림
-    if '날짜' not in df_sub.columns:
-        df_sub.columns = df_sub.iloc[0]
-        df_sub = df_sub[1:].reset_index(drop=True)
+    # [3] 정기구독 데이터 (에러가 나도 앱은 멈추지 않게 조치!)
+    try:
+        df_sub = pd.read_csv(get_csv_url('정기구독'))
         
-    # 열 이름의 띄어쓰기 완전 제거
-    df_sub.columns = [str(c).strip() for c in df_sub.columns]
-    
-    # 여기서 금액 열이 없으면 조용히 0원 처리하지 않고 에러를 강제로 띄웁니다!!
-    amt_cols = [c for c in df_sub.columns if '금액' in c or '구독' in c]
-    if not amt_cols:
-        st.error("🚨 [데이터 오류] 구글 시트에서 '정기구독' 탭을 찾을 수 없거나 형식이 틀립니다! 탭 이름에 띄어쓰기가 있는지 확인해주세요.")
-        st.stop()
-        
-    target_col = amt_cols[-1]
-    df_sub['정기구독_매출액'] = df_sub[target_col].astype(str).str.replace(r'[^\d]', '', regex=True)
-    df_sub['정기구독_매출액'] = pd.to_numeric(df_sub['정기구독_매출액'], errors='coerce').fillna(0)
-    df_sub['날짜'] = pd.to_datetime(df_sub['날짜'], errors='coerce')
-    df_sub['브랜드'] = df_sub['브랜드'].fillna('전체').astype(str).str.strip()
+        # '날짜' 헤더 찾기
+        if '날짜' not in [str(c).strip() for c in df_sub.columns]:
+            mask = df_sub.astype(str).apply(lambda x: x.str.contains('날짜', na=False)).any(axis=1)
+            if mask.any():
+                header_idx = mask.idxmax()
+                df_sub.columns = df_sub.iloc[header_idx].astype(str).str.strip().tolist()
+                df_sub = df_sub.iloc[header_idx+1:].reset_index(drop=True)
+        else:
+            df_sub.columns = [str(c).strip() for c in df_sub.columns]
+            
+        # 그래도 날짜 열이 없으면 아예 잘못된 시트임
+        if '날짜' not in df_sub.columns:
+            raise ValueError("날짜 열을 찾을 수 없음")
+            
+        df_sub['날짜'] = pd.to_datetime(df_sub['날짜'], errors='coerce')
+        if '브랜드' not in df_sub.columns: 
+            df_sub['브랜드'] = '전체'
+        else:
+            df_sub['브랜드'] = df_sub['브랜드'].astype(str).str.strip()
+            
+        # 구독 금액 열 찾기
+        target_col = None
+        for col in df_sub.columns:
+            if '구독' in str(col) or '할인금액' in str(col) or '금액' in str(col):
+                target_col = col
+                break
+                
+        if target_col:
+            df_sub['정기구독_매출액'] = df_sub[target_col].astype(str).str.replace(r'[^\d]', '', regex=True)
+            df_sub['정기구독_매출액'] = pd.to_numeric(df_sub['정기구독_매출액'], errors='coerce').fillna(0)
+        else:
+            df_sub['정기구독_매출액'] = 0
+            
+    except Exception as e:
+        # 실패하면 앱을 멈추는게 아니라 빈 껍데기를 리턴함
+        df_sub = pd.DataFrame({'날짜': pd.to_datetime([]), '브랜드': [], '정기구독_매출액': []})
 
-    # 셀티아이 & 트리어드
+    # [4] 셀티아이 & 트리어드
     df_cellti = optimize_memory(pd.read_csv(get_csv_url('셀티아이')))
     df_cellti['날짜'] = pd.to_datetime(df_cellti['날짜'], errors='coerce')
     df_cellti['브랜드'] = '셀티아이'
@@ -107,7 +128,7 @@ def load_data():
     df_triad['날짜'] = pd.to_datetime(df_triad['날짜'], errors='coerce')
     df_triad['브랜드'] = '트리어드'
     
-    # 인플루언서 추출
+    # [5] 인플루언서 데이터 (전체 시트에서 추출)
     influencer_dfs = []
     str_cols = df_total.select_dtypes(include=['object']).columns
     is_meta_yt = df_total['매체'].astype(str).str.upper().isin(['META', '유튜브'])
@@ -135,18 +156,30 @@ def load_data():
             
             if not df_inf.empty:
                 df_inf['인플루언서명'] = inf_name
-                df_inf['브랜드'] = '셀티아이 인플루언서' if inf_name == '문지애' else '트리어드 인플루언서'
+                df_inf['브랜드'] = '셀티아이 인플루언서' if inf_name == '문지애' else '트리어드 인플루언서' 
                 influencer_dfs.append(df_inf)
     
+    # [6] 메인 데이터 병합
     df_main = pd.concat([df_total, df_cellti, df_triad] + influencer_dfs, ignore_index=True)
     
     del df_total, df_cellti, df_triad, influencer_dfs
     gc.collect()
     
-    df_main['총매출액'] = (df_main['신규방문_신규구매_매출액'].fillna(0) + df_main['신규방문_재구매_매출액'].fillna(0) + df_main['재방문_신규구매_매출액'].fillna(0) + df_main['재방문_재구매_매출액'].fillna(0))
+    cat_cols = ['매체', '브랜드', '인플루언서명'] + [c for c in df_main.columns if 'CATEGORY' in c]
+    for col in cat_cols:
+        if col in df_main.columns:
+            df_main[col] = df_main[col].astype('category')
+    
+    df_main['총매출액'] = (
+        df_main['신규방문_신규구매_매출액'].fillna(0) + df_main['신규방문_재구매_매출액'].fillna(0) + 
+        df_main['재방문_신규구매_매출액'].fillna(0) + df_main['재방문_재구매_매출액'].fillna(0)
+    )
     df_main['총방문수'] = df_main['신규방문_총 방문수'].fillna(0) + df_main['재방문_총 방문수'].fillna(0)
     df_main['총회원가입'] = df_main['신규방문_회원가입'].fillna(0) + df_main['재방문_회원가입'].fillna(0)
-    df_main['총구매수'] = (df_main['신규방문_신규구매_건수'].fillna(0) + df_main['신규방문_재구매_건수'].fillna(0) + df_main['재방문_신규구매_건수'].fillna(0) + df_main['재방문_재구매_건수'].fillna(0))
+    df_main['총구매수'] = (
+        df_main['신규방문_신규구매_건수'].fillna(0) + df_main['신규방문_재구매_건수'].fillna(0) +
+        df_main['재방문_신규구매_건수'].fillna(0) + df_main['재방문_재구매_건수'].fillna(0)
+    )
     
     return df_main, df_campaign, df_sub
 
@@ -210,6 +243,10 @@ df_sub_prev = df_sub_filtered[(df_sub_filtered['날짜'].dt.date >= prev_start_d
 
 display_title = " + ".join(selected_brands) if len(selected_brands) <= 2 else "종합"
 st.title(f"📈 공식몰 성과 대시보드 ({display_title})")
+
+# 🚨 본문에 실패 사유를 명확하게 띄워줌!
+if df_sub_all.empty or df_sub_all['정기구독_매출액'].sum() == 0:
+    st.error("🚨 [데이터 연동 알림] 구글 시트에서 '정기구독' 데이터를 가져오지 못했습니다. 시트 하단 탭 이름이 띄어쓰기 없이 정확히 [정기구독] 인지 확인해 주세요!")
 
 # =========================================================
 # [순서 1] 1줄: 깔끔하게 분리된 유입 / 구매 건수 요약
@@ -313,7 +350,7 @@ if not df_camp_all.empty:
 st.markdown("---")
 
 # =========================================================
-# [순서 3] 고객 여정 퍼널 (호버 시 증감수치 노출 적용)
+# [순서 3] 고객 여정 퍼널
 # =========================================================
 st.markdown("#### 🔽 고객 여정 퍼널")
 col_funnel1, col_funnel2 = st.columns(2)
@@ -347,7 +384,7 @@ col_funnel2.plotly_chart(fig_fret, use_container_width=True)
 st.markdown("---")
 
 # =========================================================
-# [순서 4] 주요 매체 Top 5 (호버 시 증감수치 노출 적용)
+# [순서 4] 주요 매체 Top 5
 # =========================================================
 st.markdown("#### 🏆 주요 매체 Top 5")
 col_top1, col_top2, col_top3 = st.columns(3)
@@ -438,9 +475,4 @@ st.dataframe(
     column_config={
         "상태": st.column_config.TextColumn("상태", width="medium"),
         "매체": st.column_config.TextColumn("매체명", width="medium"),
-        "이전_유입수": st.column_config.NumberColumn("이전 기간 유입", format="%d"),
-        "이번_유입수": st.column_config.NumberColumn("이번 기간 유입", format="%d"),
-        "증감량": st.column_config.NumberColumn("증감량", format="%d"),
-        "증감률(%)": st.column_config.NumberColumn("증감률", format="%.1f%%")
-    }
-)
+        "이전_유입수": st.column_config.Number
