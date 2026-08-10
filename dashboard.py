@@ -373,4 +373,7 @@ fig_top_signup = px.bar(top_signup, x='총회원가입', y='매체', orientation
 fig_top_signup.update_layout(template="plotly_white", yaxis={'categoryorder':'total ascending'}, margin=dict(t=30, l=0, r=0, b=0), height=250)
 col_top2.plotly_chart(fig_top_signup, use_container_width=True)
 
-top_buy = df_current.groupby('매체')['총구매수'].
+top_buy = df_current.groupby('매체')['총구매수'].sum().reset_index().sort_values(by='총구매수', ascending=False).head(5)
+fig_top_buy = px.bar(top_buy, x='총구매수', y='매체', orientation='h', title='3. 구매 기준', text_auto='.0f', color_discrete_sequence=['#F48FB1'])
+fig_top_buy.update_layout(template="plotly_white", yaxis={'categoryorder':'total ascending'}, margin=dict(t=30, l=0, r=0, b=0), height=250)
+col_top3.plotly_chart(fig_top_buy, use_container_width=True)
