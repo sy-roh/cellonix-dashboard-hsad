@@ -22,7 +22,7 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.text_input("🔒 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
+        st.text_input("🔒 광고주 전용 대시보드입니다. 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
         st.text_input("❌ 비밀번호가 틀렸습니다. 다시 입력하세요.", type="password", on_change=password_entered, key="password")
@@ -67,33 +67,53 @@ def load_data():
         encoded_name = urllib.parse.quote(sheet_name)
         return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}"
     
-    # [1] 전체 데이터 (전체 시트 모든 데이터)
+    # [1] 전체 데이터
     df_total = pd.read_csv(get_csv_url('전체'))
-    df_total['날짜'] = pd.to_datetime(df_total['날짜'], errors='coerce') # 에러 방지
+    df_total['날짜'] = pd.to_datetime(df_total['날짜'], errors='coerce') 
     df_total['브랜드'] = '전체'
     df_total['인플루언서명'] = None
     
-    # 캠페인 데이터 로드
+    # 캠페인 데이터
     df_campaign = pd.read_csv(get_csv_url('캠페인'))
     df_campaign['시작일'] = pd.to_datetime(df_campaign['시작일'], errors='coerce')
     df_campaign['종료일'] = pd.to_datetime(df_campaign['종료일'], errors='coerce')
     mask_same_day = df_campaign['시작일'] == df_campaign['종료일']
     df_campaign.loc[mask_same_day, '종료일'] = df_campaign.loc[mask_same_day, '종료일'] + pd.Timedelta(days=1)
     
-    # [2] 셀티아이 (셀티아이 시트 모든 데이터)
-    # ※ 주의: 구글 시트 탭 이름이 '셀로닉스'라면 여기 괄호 안의 글자도 '셀로닉스'로 바꿔주세요!
+    # [NEW] 정기구독 데이터 로드 및 자동 인식 로직
+    try:
+        df_sub = pd.read_csv(get_csv_url('정기구독'))
+        df_sub['날짜'] = pd.to_datetime(df_sub['날짜'], errors='coerce')
+        if '브랜드' not in df_sub.columns:
+            df_sub['브랜드'] = '전체'
+        
+        # '매출액', '결제금액', '금액' 등의 단어가 포함된 열을 찾아 정기구독 매출액으로 자동 지정
+        sub_amt_col = '정기구독_매출액'
+        if sub_amt_col not in df_sub.columns:
+            possible_cols = [c for c in df_sub.columns if '매출' in c or '금액' in c or '구독' in c or '결제' in c]
+            if possible_cols:
+                sub_amt_col = possible_cols[0]
+            else:
+                sub_amt_col = df_sub.columns[-1]
+                
+        df_sub['정기구독_매출액'] = pd.to_numeric(df_sub[sub_amt_col], errors='coerce').fillna(0)
+    except Exception as e:
+        # 시트가 없거나 오류 시 빈 데이터 프레임 생성 (에러 방어)
+        df_sub = pd.DataFrame({'날짜': pd.to_datetime([]), '브랜드': [], '정기구독_매출액': []})
+
+    # [2] 셀티아이
     df_cellti = pd.read_csv(get_csv_url('셀티아이'))
     df_cellti['날짜'] = pd.to_datetime(df_cellti['날짜'], errors='coerce')
     df_cellti['브랜드'] = '셀티아이'
     df_cellti['인플루언서명'] = None
     
-    # [4] 트리어드 (트리어드 시트 모든 데이터)
+    # [4] 트리어드
     df_triad = pd.read_csv(get_csv_url('트리어드'))
     df_triad['날짜'] = pd.to_datetime(df_triad['날짜'], errors='coerce')
     df_triad['브랜드'] = '트리어드'
     df_triad['인플루언서명'] = None
     
-    # [3 & 5] 인플루언서 데이터 (전체 시트에서 쏙쏙 뽑아오기)
+    # [3 & 5] 인플루언서 데이터
     influencer_dfs = []
     str_cols = df_total.select_dtypes(include=['object']).columns
     is_meta_yt = df_total['매체'].astype(str).str.upper().isin(['META', '유튜브'])
@@ -112,29 +132,22 @@ def load_data():
         inf_name = str(row['내용']).strip()
         if inf_name in inf_keywords:
             pattern = inf_keywords[inf_name]
-            
-            # 날짜 크로스체크 (강력한 에러 방지 로직 적용)
             try:
                 start_date = pd.to_datetime(row['시작일'])
                 end_date = pd.to_datetime(row['종료일']) + pd.Timedelta(days=14)
                 is_valid_date = (df_total['날짜'] >= start_date) & (df_total['날짜'] <= end_date)
             except:
-                is_valid_date = True # 날짜가 깨져있으면 전체 기간에서 검색
+                is_valid_date = True 
                 
             has_keyword = df_total[str_cols].apply(lambda x: x.astype(str).str.contains(pattern)).any(axis=1)
-            
-            # 조건 1(매체) + 조건 2(날짜) + 조건 3(키워드) 완벽 일치 행만 복사
             df_inf = df_total[is_meta_yt & is_valid_date & has_keyword].copy()
             
             if not df_inf.empty:
                 df_inf['인플루언서명'] = inf_name
-                if inf_name == '문지애':
-                    df_inf['브랜드'] = '셀티아이 인플루언서' # [3] 셀티아이 인플루언서
-                else:
-                    df_inf['브랜드'] = '트리어드 인플루언서' # [5] 트리어드 인플루언서
+                if inf_name == '문지애': df_inf['브랜드'] = '셀티아이 인플루언서' 
+                else: df_inf['브랜드'] = '트리어드 인플루언서' 
                 influencer_dfs.append(df_inf)
     
-    # 추출된 5가지 덩어리를 하나의 큰 데이터베이스로 결합
     df_main = pd.concat([df_total, df_cellti, df_triad] + influencer_dfs, ignore_index=True)
     
     df_main['총매출액'] = (
@@ -148,34 +161,41 @@ def load_data():
         df_main['재방문_신규구매_건수'].fillna(0) + df_main['재방문_재구매_건수'].fillna(0)
     )
     
-    return df_main, df_campaign
+    return df_main, df_campaign, df_sub
 
-df_all, df_camp_all = load_data()
+df_all, df_camp_all, df_sub_all = load_data()
 
 # ---------------------------------------------------------
 # 4. 사이드바 (필터) 및 대시보드 렌더링
 # ---------------------------------------------------------
 st.sidebar.header("📊 필터")
 brand_options = ["전체", "셀티아이", "셀티아이 인플루언서", "트리어드", "트리어드 인플루언서"]
-# 🌟 변경점: selectbox -> multiselect (합쳐보기 가능!)
 selected_brands = st.sidebar.multiselect("📌 브랜드 선택 (다중 선택 가능)", brand_options, default=["전체"])
 
-# 브랜드 미선택 시 안내 메시지
 if not selected_brands:
     st.warning("👈 왼쪽 사이드바에서 분석할 브랜드를 하나 이상 선택해 주세요.")
     st.stop()
 
-# 1차 필터링: 선택한 브랜드들의 데이터만 쏙쏙 합쳐서 가져옴
+# 1차 필터링
 df_filtered = df_all[df_all['브랜드'].isin(selected_brands)].copy()
 
-# 2차 필터링: 인플루언서 추가/제거 기능 (인플루언서 포함 브랜드를 골랐을 때만 등장)
+# 정기구독 데이터 필터링용 타겟 브랜드 산출
+sub_target_brands = set()
+if "전체" in selected_brands: sub_target_brands.update(["전체", "셀티아이", "트리어드"])
+else:
+    for b in selected_brands:
+        if "셀티아이" in b: sub_target_brands.add("셀티아이")
+        if "트리어드" in b: sub_target_brands.add("트리어드")
+        if "전체" in b: sub_target_brands.add("전체")
+
+df_sub_filtered = df_sub_all[df_sub_all['브랜드'].isin(sub_target_brands)].copy() if sub_target_brands else df_sub_all.copy()
+
+# 2차 필터링: 인플루언서 추가/제거
 if any("인플루언서" in b for b in selected_brands):
     inf_list = df_filtered['인플루언서명'].dropna().unique().tolist()
     if inf_list:
         st.sidebar.markdown("---")
         selected_infs = st.sidebar.multiselect("👤 인플루언서 온/오프", inf_list, default=inf_list)
-        
-        # 합쳐보기 로직 핵심: '일반 브랜드(셀티아이 등)' 데이터는 무조건 보존하고, '인플루언서' 데이터는 선택된 사람만 남김!
         mask_normal = df_filtered['인플루언서명'].isna()
         mask_selected_inf = df_filtered['인플루언서명'].isin(selected_infs)
         df_filtered = df_filtered[mask_normal | mask_selected_inf]
@@ -197,20 +217,21 @@ selected_media = st.sidebar.multiselect("📺 매체 선택", media_options, def
 if "전체" not in selected_media:
     df_filtered = df_filtered[df_filtered['매체'].isin(selected_media)]
 
-# 현재 데이터와 비교용 이전 기간 데이터 산출
+# 메인 및 구독 데이터 날짜 분리
 df_current = df_filtered[(df_filtered['날짜'].dt.date >= start_date) & (df_filtered['날짜'].dt.date <= end_date)]
+df_sub_current = df_sub_filtered[(df_sub_filtered['날짜'].dt.date >= start_date) & (df_sub_filtered['날짜'].dt.date <= end_date)]
 
 duration = (end_date - start_date).days + 1
 prev_end_date = start_date - timedelta(days=1)
 prev_start_date = prev_end_date - timedelta(days=duration - 1)
 df_prev = df_filtered[(df_filtered['날짜'].dt.date >= prev_start_date) & (df_filtered['날짜'].dt.date <= prev_end_date)]
+df_sub_prev = df_sub_filtered[(df_sub_filtered['날짜'].dt.date >= prev_start_date) & (df_sub_filtered['날짜'].dt.date <= prev_end_date)]
 
-# 대시보드 제목 동적 변경
 display_title = " + ".join(selected_brands) if len(selected_brands) <= 2 else "종합"
 st.title(f"📈 공식몰 성과 대시보드 ({display_title})")
 
 # =========================================================
-# [순서 1] KPI
+# [순서 1] KPI (정기구독 로직 적용)
 # =========================================================
 st.caption(f"※ 비교 기준: 선택한 기간({duration}일)과 동일한 직전 기간({prev_start_date} ~ {prev_end_date}) 대비")
 
@@ -220,6 +241,8 @@ cur_ret_visit = df_current['재방문_총 방문수'].sum()
 cur_total_buy = df_current['총구매수'].sum()
 cur_new_buy = df_current['신규방문_신규구매_건수'].sum() + df_current['신규방문_재구매_건수'].sum()
 cur_ret_buy = df_current['재방문_신규구매_건수'].sum() + df_current['재방문_재구매_건수'].sum()
+
+# 기본 매출
 cur_total_rev = df_current['총매출액'].sum()
 cur_new_rev = df_current['신규방문_신규구매_매출액'].sum() + df_current['신규방문_재구매_매출액'].sum()
 cur_ret_rev = df_current['재방문_신규구매_매출액'].sum() + df_current['재방문_재구매_매출액'].sum()
@@ -230,29 +253,56 @@ prev_ret_visit = df_prev['재방문_총 방문수'].sum()
 prev_total_buy = df_prev['총구매수'].sum()
 prev_new_buy = df_prev['신규방문_신규구매_건수'].sum() + df_prev['신규방문_재구매_건수'].sum()
 prev_ret_buy = df_prev['재방문_신규구매_건수'].sum() + df_prev['재방문_재구매_건수'].sum()
+
 prev_total_rev = df_prev['총매출액'].sum()
 prev_new_rev = df_prev['신규방문_신규구매_매출액'].sum() + df_prev['신규방문_재구매_매출액'].sum()
 prev_ret_rev = df_prev['재방문_신규구매_매출액'].sum() + df_prev['재방문_재구매_매출액'].sum()
 
-col1, col2, col3 = st.columns(3)
+# 정기구독 및 순수 매출 계산
+cur_sub_rev = df_sub_current['정기구독_매출액'].sum()
+prev_sub_rev = df_sub_prev['정기구독_매출액'].sum()
+
+cur_pure_total_rev = cur_total_rev - cur_sub_rev
+prev_pure_total_rev = prev_total_rev - prev_sub_rev
+
+cur_pure_ret_rev = cur_ret_rev - cur_sub_rev
+prev_pure_ret_rev = prev_ret_rev - prev_sub_rev
+
+# 레이아웃: 매출액 섹션에 비중을 더 주기 위해 [1, 1, 1.8] 비율 사용
+col1, col2, col3 = st.columns([1, 1, 1.8])
 with col1:
     st.markdown("**👥 유입 지표**")
-    cc1, cc2, cc3 = st.columns(3)
+    cc1, cc2 = st.columns(2)
     cc1.metric("총 방문수", format_number(cur_total_visit), delta=calculate_delta(cur_total_visit, prev_total_visit))
     cc2.metric("신규 방문", format_number(cur_new_visit), delta=calculate_delta(cur_new_visit, prev_new_visit))
+    st.markdown("<br>", unsafe_allow_html=True) # 줄맞춤
+    cc3, cc4 = st.columns(2)
     cc3.metric("재방문", format_number(cur_ret_visit), delta=calculate_delta(cur_ret_visit, prev_ret_visit))
+
 with col2:
     st.markdown("**🛒 구매 건수**")
-    cc1, cc2, cc3 = st.columns(3)
+    cc1, cc2 = st.columns(2)
     cc1.metric("총 구매", format_number(cur_total_buy), delta=calculate_delta(cur_total_buy, prev_total_buy))
     cc2.metric("신규 구매", format_number(cur_new_buy), delta=calculate_delta(cur_new_buy, prev_new_buy))
+    st.markdown("<br>", unsafe_allow_html=True)
+    cc3, cc4 = st.columns(2)
     cc3.metric("재방문 구매", format_number(cur_ret_buy), delta=calculate_delta(cur_ret_buy, prev_ret_buy))
+
 with col3:
-    st.markdown("**💰 매출액**")
-    cc1, cc2, cc3 = st.columns(3)
-    cc1.metric("총 매출", format_currency(cur_total_rev), delta=calculate_delta(cur_total_rev, prev_total_rev))
-    cc2.metric("신규 매출", format_currency(cur_new_rev), delta=calculate_delta(cur_new_rev, prev_new_rev))
-    cc3.metric("재방문 매출", format_currency(cur_ret_rev), delta=calculate_delta(cur_ret_rev, prev_ret_rev))
+    st.markdown("**💰 핵심 매출액 분석 (정기구독 분리)**")
+    # 첫번째 줄 (총매출 분석)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("총 매출", format_currency(cur_total_rev), delta=calculate_delta(cur_total_rev, prev_total_rev))
+    c2.metric("🔄 정기구독 매출", format_currency(cur_sub_rev), delta=calculate_delta(cur_sub_rev, prev_sub_rev))
+    c3.metric("✨ 총 순수매출", format_currency(cur_pure_total_rev), delta=calculate_delta(cur_pure_total_rev, prev_pure_total_rev))
+    
+    st.markdown("<hr style='margin:0.5rem 0'>", unsafe_allow_html=True)
+    
+    # 두번째 줄 (유입별 분석)
+    c4, c5, c6 = st.columns(3)
+    c4.metric("신규 방문 매출", format_currency(cur_new_rev), delta=calculate_delta(cur_new_rev, prev_new_rev))
+    c5.metric("재방문 매출", format_currency(cur_ret_rev), delta=calculate_delta(cur_ret_rev, prev_ret_rev))
+    c6.metric("✨ 재방문 순수매출", format_currency(cur_pure_ret_rev), delta=calculate_delta(cur_pure_ret_rev, prev_pure_ret_rev))
 
 st.markdown("---")
 
@@ -281,8 +331,6 @@ st.plotly_chart(fig_trend, use_container_width=True)
 
 if not df_camp_all.empty:
     camp_df = df_camp_all.copy()
-    
-    # 🌟 다중 선택된 브랜드에 맞춰 캠페인 타임라인 노출
     camp_target_brands = set()
     if "전체" in selected_brands:
         camp_target_brands.update(["전체", "셀티아이", "트리어드"])
