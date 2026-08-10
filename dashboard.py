@@ -22,7 +22,7 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.text_input("🔒 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
+        st.text_input("🔒 광고주 전용 대시보드입니다. 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
         st.text_input("❌ 비밀번호가 틀렸습니다. 다시 입력하세요.", type="password", on_change=password_entered, key="password")
@@ -67,17 +67,34 @@ def load_data():
         encoded_name = urllib.parse.quote(sheet_name)
         return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}"
     
-    # [1] 전체 트래픽 및 캠페인 데이터 읽어오기
+    # [1] 전체 데이터 (전체 시트 모든 데이터)
     df_total = pd.read_csv(get_csv_url('전체'))
-    df_total['날짜'] = pd.to_datetime(df_total['날짜'])
+    df_total['날짜'] = pd.to_datetime(df_total['날짜'], errors='coerce') # 에러 방지
+    df_total['브랜드'] = '전체'
+    df_total['인플루언서명'] = None
     
+    # 캠페인 데이터 로드
     df_campaign = pd.read_csv(get_csv_url('캠페인'))
-    df_campaign['시작일'] = pd.to_datetime(df_campaign['시작일'])
-    df_campaign['종료일'] = pd.to_datetime(df_campaign['종료일'])
+    df_campaign['시작일'] = pd.to_datetime(df_campaign['시작일'], errors='coerce')
+    df_campaign['종료일'] = pd.to_datetime(df_campaign['종료일'], errors='coerce')
     mask_same_day = df_campaign['시작일'] == df_campaign['종료일']
     df_campaign.loc[mask_same_day, '종료일'] = df_campaign.loc[mask_same_day, '종료일'] + pd.Timedelta(days=1)
     
-    # ==== 🌟 인플루언서 기간+태그 크로스체크 추출 🌟 ====
+    # [2] 셀티아이 (셀티아이 시트 모든 데이터)
+    # ※ 주의: 구글 시트 탭 이름이 '셀로닉스'라면 여기 괄호 안의 글자도 '셀로닉스'로 바꿔주세요!
+    df_cellti = pd.read_csv(get_csv_url('셀티아이'))
+    df_cellti['날짜'] = pd.to_datetime(df_cellti['날짜'], errors='coerce')
+    df_cellti['브랜드'] = '셀티아이'
+    df_cellti['인플루언서명'] = None
+    
+    # [4] 트리어드 (트리어드 시트 모든 데이터)
+    df_triad = pd.read_csv(get_csv_url('트리어드'))
+    df_triad['날짜'] = pd.to_datetime(df_triad['날짜'], errors='coerce')
+    df_triad['브랜드'] = '트리어드'
+    df_triad['인플루언서명'] = None
+    
+    # [3 & 5] 인플루언서 데이터 (전체 시트에서 쏙쏙 뽑아오기)
+    influencer_dfs = []
     str_cols = df_total.select_dtypes(include=['object']).columns
     is_meta_yt = df_total['매체'].astype(str).str.upper().isin(['META', '유튜브'])
     
@@ -90,54 +107,34 @@ def load_data():
         '강주은': r'(?i)강주은|jueun|주은|깡주은'
     }
     
-    influencer_dfs = []
-    
-    # 캠페인 시트에서 '인플루언서' 관련 일정만 필터링
     df_inf_campaigns = df_campaign[df_campaign['구분'] == '인플루언서']
-    
     for idx, row in df_inf_campaigns.iterrows():
-        inf_name = row['내용']
-        
+        inf_name = str(row['내용']).strip()
         if inf_name in inf_keywords:
             pattern = inf_keywords[inf_name]
             
-            # 날짜 크로스체크: 캠페인 시작일 ~ 종료일 + 여운 트래픽(14일) 버퍼 적용
-            start_date = row['시작일']
-            end_date = row['종료일'] + pd.Timedelta(days=14)
-            is_valid_date = (df_total['날짜'] >= start_date) & (df_total['날짜'] <= end_date)
-            
-            # 키워드 매칭
+            # 날짜 크로스체크 (강력한 에러 방지 로직 적용)
+            try:
+                start_date = pd.to_datetime(row['시작일'])
+                end_date = pd.to_datetime(row['종료일']) + pd.Timedelta(days=14)
+                is_valid_date = (df_total['날짜'] >= start_date) & (df_total['날짜'] <= end_date)
+            except:
+                is_valid_date = True # 날짜가 깨져있으면 전체 기간에서 검색
+                
             has_keyword = df_total[str_cols].apply(lambda x: x.astype(str).str.contains(pattern)).any(axis=1)
             
-            # 조건 1(매체) + 조건 2(날짜) + 조건 3(키워드) 완벽 일치 교집합 찾기
+            # 조건 1(매체) + 조건 2(날짜) + 조건 3(키워드) 완벽 일치 행만 복사
             df_inf = df_total[is_meta_yt & is_valid_date & has_keyword].copy()
             
             if not df_inf.empty:
                 df_inf['인플루언서명'] = inf_name
-                # 브랜드 맵핑 룰
                 if inf_name == '문지애':
-                    df_inf['브랜드'] = '셀티아이 인플루언서'
+                    df_inf['브랜드'] = '셀티아이 인플루언서' # [3] 셀티아이 인플루언서
                 else:
-                    df_inf['브랜드'] = '트리어드 인플루언서'
-                    
+                    df_inf['브랜드'] = '트리어드 인플루언서' # [5] 트리어드 인플루언서
                 influencer_dfs.append(df_inf)
-    # ============================================
     
-    df_total['브랜드'] = '전체'
-    df_total['인플루언서명'] = None
-    
-    # [2] 셀티아이 / 트리어드 개별 데이터 읽어오기
-    df_cellti = pd.read_csv(get_csv_url('셀티아이'))
-    df_cellti['날짜'] = pd.to_datetime(df_cellti['날짜'])
-    df_cellti['브랜드'] = '셀티아이'
-    df_cellti['인플루언서명'] = None
-    
-    df_triad = pd.read_csv(get_csv_url('트리어드'))
-    df_triad['날짜'] = pd.to_datetime(df_triad['날짜'])
-    df_triad['브랜드'] = '트리어드'
-    df_triad['인플루언서명'] = None
-    
-    # [3] 총 5가지 브랜드를 하나의 메인 데이터로 결합
+    # 추출된 5가지 덩어리를 하나의 큰 데이터베이스로 결합
     df_main = pd.concat([df_total, df_cellti, df_triad] + influencer_dfs, ignore_index=True)
     
     df_main['총매출액'] = (
@@ -160,33 +157,42 @@ df_all, df_camp_all = load_data()
 # ---------------------------------------------------------
 st.sidebar.header("📊 필터")
 brand_options = ["전체", "셀티아이", "셀티아이 인플루언서", "트리어드", "트리어드 인플루언서"]
-selected_brand = st.sidebar.selectbox("브랜드 선택", brand_options)
+# 🌟 변경점: selectbox -> multiselect (합쳐보기 가능!)
+selected_brands = st.sidebar.multiselect("📌 브랜드 선택 (다중 선택 가능)", brand_options, default=["전체"])
 
-# 1차 필터링: 브랜드 선택
-df_filtered = df_all.copy()
-df_filtered = df_filtered[df_filtered['브랜드'] == selected_brand]
+# 브랜드 미선택 시 안내 메시지
+if not selected_brands:
+    st.warning("👈 왼쪽 사이드바에서 분석할 브랜드를 하나 이상 선택해 주세요.")
+    st.stop()
 
-# 2차 필터링: 인플루언서 개별 다중 선택 (인플루언서 브랜드 선택 시에만 등장)
-if "인플루언서" in selected_brand:
+# 1차 필터링: 선택한 브랜드들의 데이터만 쏙쏙 합쳐서 가져옴
+df_filtered = df_all[df_all['브랜드'].isin(selected_brands)].copy()
+
+# 2차 필터링: 인플루언서 추가/제거 기능 (인플루언서 포함 브랜드를 골랐을 때만 등장)
+if any("인플루언서" in b for b in selected_brands):
     inf_list = df_filtered['인플루언서명'].dropna().unique().tolist()
     if inf_list:
         st.sidebar.markdown("---")
-        selected_infs = st.sidebar.multiselect("👤 인플루언서 선택 (체크박스)", inf_list, default=inf_list)
-        df_filtered = df_filtered[df_filtered['인플루언서명'].isin(selected_infs)]
+        selected_infs = st.sidebar.multiselect("👤 인플루언서 온/오프", inf_list, default=inf_list)
+        
+        # 합쳐보기 로직 핵심: '일반 브랜드(셀티아이 등)' 데이터는 무조건 보존하고, '인플루언서' 데이터는 선택된 사람만 남김!
+        mask_normal = df_filtered['인플루언서명'].isna()
+        mask_selected_inf = df_filtered['인플루언서명'].isin(selected_infs)
+        df_filtered = df_filtered[mask_normal | mask_selected_inf]
         st.sidebar.markdown("---")
 
 # 3차 필터링: 날짜
 min_date = df_all['날짜'].min().date()
 max_date = df_all['날짜'].max().date()
 default_start_date = max_date.replace(day=1) 
-date_range = st.sidebar.date_input("조회 기간", value=(default_start_date, max_date), min_value=min_date, max_value=max_date)
+date_range = st.sidebar.date_input("🗓️ 조회 기간", value=(default_start_date, max_date), min_value=min_date, max_value=max_date)
 
 if len(date_range) == 2: start_date, end_date = date_range
 else: start_date, end_date = default_start_date, max_date 
 
 # 4차 필터링: 매체
 media_options = ["전체"] + list(df_all['매체'].dropna().unique())
-selected_media = st.sidebar.multiselect("매체 선택", media_options, default=["전체"])
+selected_media = st.sidebar.multiselect("📺 매체 선택", media_options, default=["전체"])
 
 if "전체" not in selected_media:
     df_filtered = df_filtered[df_filtered['매체'].isin(selected_media)]
@@ -199,7 +205,9 @@ prev_end_date = start_date - timedelta(days=1)
 prev_start_date = prev_end_date - timedelta(days=duration - 1)
 df_prev = df_filtered[(df_filtered['날짜'].dt.date >= prev_start_date) & (df_filtered['날짜'].dt.date <= prev_end_date)]
 
-st.title(f"📈 공식몰 성과 대시보드 ({selected_brand})")
+# 대시보드 제목 동적 변경
+display_title = " + ".join(selected_brands) if len(selected_brands) <= 2 else "종합"
+st.title(f"📈 공식몰 성과 대시보드 ({display_title})")
 
 # =========================================================
 # [순서 1] KPI
@@ -274,12 +282,16 @@ st.plotly_chart(fig_trend, use_container_width=True)
 if not df_camp_all.empty:
     camp_df = df_camp_all.copy()
     
-    if selected_brand == "셀티아이 인플루언서":
-        camp_df = camp_df[camp_df['브랜드'] == "셀티아이"]
-    elif selected_brand == "트리어드 인플루언서":
-        camp_df = camp_df[camp_df['브랜드'] == "트리어드"]
-    elif selected_brand != "전체": 
-        camp_df = camp_df[camp_df['브랜드'] == selected_brand]
+    # 🌟 다중 선택된 브랜드에 맞춰 캠페인 타임라인 노출
+    camp_target_brands = set()
+    if "전체" in selected_brands:
+        camp_target_brands.update(["전체", "셀티아이", "트리어드"])
+    else:
+        for b in selected_brands:
+            if "셀티아이" in b: camp_target_brands.add("셀티아이")
+            if "트리어드" in b: camp_target_brands.add("트리어드")
+            
+    camp_df = camp_df[camp_df['브랜드'].isin(camp_target_brands)]
         
     if not camp_df.empty:
         fig_gantt = px.timeline(camp_df, x_start="시작일", x_end="종료일", y="내용", color="구분", text="내용", height=200, color_discrete_sequence=['#4CAF50', '#FF9800'])
