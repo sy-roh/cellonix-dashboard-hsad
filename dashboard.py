@@ -20,7 +20,7 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.text_input("🔒 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
+        st.text_input("🔒 광고주 전용 대시보드입니다. 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
         st.text_input("❌ 비밀번호가 틀렸습니다. 다시 입력하세요.", type="password", on_change=password_entered, key="password")
@@ -53,9 +53,8 @@ def calculate_delta(current_val, prev_val):
     return f"{((current_val - prev_val) / prev_val) * 100:.1f}%"
 
 # ---------------------------------------------------------
-# 3. 데이터 로드 및 전처리 (🌟 극한의 메모리 최적화 적용)
+# 3. 데이터 로드 및 전처리 (🌟 엑셀 오류 방지 초강력 로직)
 # ---------------------------------------------------------
-# max_entries=1 옵션으로 이전 데이터 캐시를 쌓아두지 않고 삭제하여 RAM 터짐 방지
 @st.cache_data(ttl=600, max_entries=1)
 def load_data():
     raw_url = st.secrets["gsheet_url"]
@@ -65,13 +64,12 @@ def load_data():
         encoded_name = urllib.parse.quote(sheet_name)
         return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}"
         
-    # 데이터 용량을 획기적으로 줄이는 압축 함수
     def optimize_memory(df):
         for col in df.select_dtypes(include=['float64', 'int64']).columns:
             df[col] = pd.to_numeric(df[col], downcast='float')
         return df
     
-    # [1] 전체 데이터 읽기 및 압축
+    # [1] 전체 데이터
     df_total = pd.read_csv(get_csv_url('전체'))
     df_total = optimize_memory(df_total)
     df_total['날짜'] = pd.to_datetime(df_total['날짜'], errors='coerce') 
@@ -85,30 +83,41 @@ def load_data():
     mask_same_day = df_campaign['시작일'] == df_campaign['종료일']
     df_campaign.loc[mask_same_day, '종료일'] = df_campaign.loc[mask_same_day, '종료일'] + pd.Timedelta(days=1)
     
-    # [3] 정기구독 데이터 (안전 로직)
+    # [3] 정기구독 데이터 (🌟 핵심 수정 부분)
     try:
         df_sub = pd.read_csv(get_csv_url('정기구독'))
+        
+        # 엑셀 첫 줄에 '브랜드별_매출통계' 등 잡다한 제목이 있어서 열 이름이 밀린 경우 복구
         if '날짜' not in df_sub.columns:
-            mask = df_sub.astype(str).apply(lambda x: x.str.contains('날짜')).any(axis=1)
+            # '날짜'라는 정확한 글자가 있는 행을 찾음
+            mask = df_sub.astype(str).apply(lambda x: x.str.strip() == '날짜').any(axis=1)
             if mask.any():
                 header_idx = mask.idxmax()
-                df_sub.columns = df_sub.iloc[header_idx]
-                df_sub = df_sub.iloc[header_idx+1:].reset_index(drop=True)
-                
+                df_sub.columns = df_sub.iloc[header_idx].astype(str).str.strip().tolist() # 해당 행을 열 이름으로 올림
+                df_sub = df_sub.iloc[header_idx+1:].reset_index(drop=True) # 윗부분 잘라내기
+        else:
+            df_sub.columns = [str(c).strip() for c in df_sub.columns]
+            
         df_sub['날짜'] = pd.to_datetime(df_sub['날짜'], errors='coerce')
-        if '브랜드' not in df_sub.columns: df_sub['브랜드'] = '전체'
-        
-        sub_col = [c for c in df_sub.columns if pd.notnull(c) and '구독' in str(c)]
+        if '브랜드' not in df_sub.columns: 
+            df_sub['브랜드'] = '전체'
+        else:
+            df_sub['브랜드'] = df_sub['브랜드'].astype(str).str.strip()
+            
+        # 구독 금액이 들어있는 열 자동으로 찾기 ('구독' 또는 '할인금액' 글자 포함)
+        sub_col = [c for c in df_sub.columns if pd.notnull(c) and ('구독' in str(c) or '할인금액' in str(c) or '금액' in str(c))]
         if sub_col:
-            df_sub['정기구독_매출액'] = df_sub[sub_col[-1]].astype(str).replace(',', '', regex=True)
+            # 금액 데이터에 들어있는 콤마(,), 원(₩) 등 모든 문자 기호를 정규식으로 완벽히 제거 후 숫자로 변환
+            df_sub['정기구독_매출액'] = df_sub[sub_col[-1]].astype(str).str.replace(r'[^\d]', '', regex=True)
             df_sub['정기구독_매출액'] = pd.to_numeric(df_sub['정기구독_매출액'], errors='coerce').fillna(0)
         else:
             df_sub['정기구독_매출액'] = 0
             
     except Exception as e:
+        # 혹시나 시트가 아예 없더라도 오류 없이 넘어가도록 방어
         df_sub = pd.DataFrame({'날짜': pd.to_datetime([]), '브랜드': [], '정기구독_매출액': []})
 
-    # [4] 셀티아이 & 트리어드 읽기 및 압축
+    # [4] 셀티아이 & 트리어드
     df_cellti = pd.read_csv(get_csv_url('셀티아이'))
     df_cellti = optimize_memory(df_cellti)
     df_cellti['날짜'] = pd.to_datetime(df_cellti['날짜'], errors='coerce')
@@ -159,11 +168,9 @@ def load_data():
     # [6] 메인 데이터 병합
     df_main = pd.concat([df_total, df_cellti, df_triad] + influencer_dfs, ignore_index=True)
     
-    # 🌟 병합 후 불필요한 개별 데이터는 즉시 삭제하여 메모리 반환
     del df_total, df_cellti, df_triad, influencer_dfs
     gc.collect()
     
-    # 🌟 용량이 큰 문자열(Object)을 아주 가벼운 카테고리로 2차 압축
     cat_cols = ['매체', '브랜드', '인플루언서명'] + [c for c in df_main.columns if 'CATEGORY' in c]
     for col in cat_cols:
         if col in df_main.columns:
@@ -243,6 +250,11 @@ df_sub_prev = df_sub_filtered[(df_sub_filtered['날짜'].dt.date >= prev_start_d
 display_title = " + ".join(selected_brands) if len(selected_brands) <= 2 else "종합"
 st.title(f"📈 공식몰 성과 대시보드 ({display_title})")
 
+# 🌟 데이터 상태 진단 안내 메시지
+cur_sub_rev = df_sub_current['정기구독_매출액'].sum()
+if cur_sub_rev == 0:
+    st.info("💡 알림: 현재 선택한 기간에 정기구독 매출이 0원입니다. 만약 오류라고 생각되시면 구글 시트의 탭 이름이 정확히 '정기구독'인지 확인해주세요.")
+
 # =========================================================
 # [순서 1] 1줄: 깔끔하게 정리된 유입/구매 건수 요약
 # =========================================================
@@ -278,7 +290,6 @@ st.markdown("<hr style='margin:0.5rem 0'>", unsafe_allow_html=True)
 # =========================================================
 cur_new_rev = df_current['신규방문_신규구매_매출액'].sum() + df_current['신규방문_재구매_매출액'].sum()
 cur_ret_rev = df_current['재방문_신규구매_매출액'].sum() + df_current['재방문_재구매_매출액'].sum()
-cur_sub_rev = df_sub_current['정기구독_매출액'].sum()
 cur_grand_total_rev = cur_new_rev + cur_ret_rev + cur_sub_rev
 
 prev_new_rev = df_prev['신규방문_신규구매_매출액'].sum() + df_prev['신규방문_재구매_매출액'].sum()
