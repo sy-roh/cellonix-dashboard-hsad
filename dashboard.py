@@ -188,13 +188,13 @@ def load_data():
 
     # -----------------------------------------------------
     # 브랜드 데이터 생성
-    # '셀티아이' / '트리어드' 개별 시트 대신 '전체' 시트에서 생성
+    # '전체' 시트의 CATEGORY_1~5 실제 태그만 기준으로 분류
+    #
+    # 중요:
+    # - 미분류 데이터는 어떤 브랜드에도 임의 배분하지 않음
+    # - 보정 비율 / 추정 배분 없음
+    # - 셀티아이/트리어드/기타가 실제 태그로 확인되는 행만 사용
     # -----------------------------------------------------
-    UNCLASSIFIED_RATIO = {
-        '셀티아이': 0.6017037623023724,   # 화면상 60.17%
-        '트리어드': 0.30672158945459616, # 화면상 30.67%
-        '기타': 0.09157464824303162,      # 화면상 9.16%
-    }
 
     revenue_cols = [
         '신규방문_신규구매_매출액',
@@ -207,19 +207,26 @@ def load_data():
     for col in revenue_cols:
         if col in df_total.columns:
             df_total[col] = pd.to_numeric(
-                df_total[col].astype(str).str.replace(',', '', regex=False),
+                df_total[col]
+                .astype(str)
+                .str.replace(',', '', regex=False),
                 errors='coerce'
             ).fillna(0)
 
     # CATEGORY_1 ~ CATEGORY_5 태그 자동 탐색
-    expected_category_cols = {f'CATEGORY_{i}' for i in range(1, 6)}
+    expected_category_cols = {
+        f'CATEGORY_{i}' for i in range(1, 6)
+    }
+
     category_cols = [
         c for c in df_total.columns
         if str(c).strip().upper() in expected_category_cols
     ]
 
     if not category_cols:
-        raise ValueError("전체 시트에서 CATEGORY_1~CATEGORY_5 컬럼을 찾을 수 없습니다.")
+        raise ValueError(
+            "전체 시트에서 CATEGORY_1~CATEGORY_5 컬럼을 찾을 수 없습니다."
+        )
 
     category_text = (
         df_total[category_cols]
@@ -228,82 +235,57 @@ def load_data():
         .agg(' | '.join, axis=1)
     )
 
-    has_cellti = category_text.str.contains('셀티아이', case=False, regex=False)
-    has_triad = category_text.str.contains('트리어드', case=False, regex=False)
+    has_cellti = category_text.str.contains(
+        '셀티아이',
+        case=False,
+        regex=False
+    )
 
-    # 둘 중 하나만 명확히 태깅된 행만 직접 분류
-    cellti_mask = has_cellti & ~has_triad
-    triad_mask = has_triad & ~has_cellti
+    has_triad = category_text.str.contains(
+        '트리어드',
+        case=False,
+        regex=False
+    )
 
-    # 태그 없음 또는 두 브랜드가 동시에 들어간 행은 미분류
-    unclassified_mask = ~(cellti_mask | triad_mask)
-
-    # '기타' 제품이 CATEGORY에 명시되어 있으면 실제 기타로 사용
-    explicit_other_mask = category_text.str.contains(
+    has_other = category_text.str.contains(
         '기타',
         case=False,
         regex=False
     )
 
-    # 명확한 태그 데이터는 전체 시트에서 그대로 사용
-    df_cellti_tagged = df_total[cellti_mask].copy()
-    df_cellti_tagged['브랜드'] = '셀티아이'
-
-    df_triad_tagged = df_total[triad_mask].copy()
-    df_triad_tagged['브랜드'] = '트리어드'
-
-    df_unclassified = df_total[unclassified_mask].copy()
-
-    # 공식몰 실매출에 사용할 '기타'
-    # 1순위: CATEGORY에 '기타'가 명시된 실제 행
-    # 2순위: 명시적 기타가 없으면 기존 보정 방식(미분류의 9.16%) 사용
-    df_other_explicit = df_total[explicit_other_mask].copy()
-    if not df_other_explicit.empty:
-        df_other_explicit['브랜드'] = '기타'
-
-    def make_allocated_revenue_rows(source_df, brand_name, ratio):
-        """미분류 행은 매출액만 비율 배분하고 기타 지표는 중복 합산하지 않음."""
-        allocated = source_df.copy()
-        allocated['브랜드'] = brand_name
-
-        # 방문/가입/구매건수 등 숫자 지표는 중복 방지를 위해 0
-        numeric_cols = allocated.select_dtypes(include='number').columns.tolist()
-        non_revenue_numeric_cols = [c for c in numeric_cols if c not in revenue_cols]
-        if non_revenue_numeric_cols:
-            allocated[non_revenue_numeric_cols] = 0
-
-        # 매출액만 지정 비율로 자동 배분
-        for col in revenue_cols:
-            if col in allocated.columns:
-                allocated[col] = allocated[col].fillna(0) * ratio
-
-        return allocated
-
-    df_cellti_alloc = make_allocated_revenue_rows(
-        df_unclassified, '셀티아이', UNCLASSIFIED_RATIO['셀티아이']
-    )
-    df_triad_alloc = make_allocated_revenue_rows(
-        df_unclassified, '트리어드', UNCLASSIFIED_RATIO['트리어드']
-    )
-    df_other_alloc = make_allocated_revenue_rows(
-        df_unclassified, '기타', UNCLASSIFIED_RATIO['기타']
+    # 한 행에 두 브랜드 태그가 동시에 있을 경우 임의 분류하지 않음
+    cellti_mask = (
+        has_cellti
+        & ~has_triad
     )
 
-    # 전체 시트에서 명시적인 '기타' 태그가 있으면 그것을 우선 사용
-    df_other = (
-        df_other_explicit.copy()
-        if not df_other_explicit.empty
-        else df_other_alloc.copy()
+    triad_mask = (
+        has_triad
+        & ~has_cellti
     )
 
-    df_cellti = pd.concat(
-        [df_cellti_tagged, df_cellti_alloc],
-        ignore_index=True
+    # 기타도 셀티아이/트리어드 태그가 없는 경우만 독립 분류
+    other_mask = (
+        has_other
+        & ~has_cellti
+        & ~has_triad
     )
-    df_triad = pd.concat(
-        [df_triad_tagged, df_triad_alloc],
-        ignore_index=True
-    )
+
+    # 실제 태그가 확인되는 행만 브랜드별 데이터로 사용
+    df_cellti = df_total[
+        cellti_mask
+    ].copy()
+    df_cellti['브랜드'] = '셀티아이'
+
+    df_triad = df_total[
+        triad_mask
+    ].copy()
+    df_triad['브랜드'] = '트리어드'
+
+    df_other = df_total[
+        other_mask
+    ].copy()
+    df_other['브랜드'] = '기타'
 
     # 인플루언서 매핑
     influencer_dfs = []
