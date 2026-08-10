@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import timedelta
 import urllib.parse 
+import gc  # 🌟 메모리 청소부 추가
 
 # ---------------------------------------------------------
 # 1. 페이지 및 기본 설정
@@ -56,7 +57,7 @@ def calculate_delta(current_val, prev_val):
     return f"{((current_val - prev_val) / prev_val) * 100:.1f}%"
 
 # ---------------------------------------------------------
-# 3. 데이터 로드 및 전처리 (구글 스프레드시트 연동)
+# 3. 데이터 로드 및 전처리 (메모리 다이어트 적용)
 # ---------------------------------------------------------
 @st.cache_data(ttl=600)
 def load_data():
@@ -80,11 +81,9 @@ def load_data():
     mask_same_day = df_campaign['시작일'] == df_campaign['종료일']
     df_campaign.loc[mask_same_day, '종료일'] = df_campaign.loc[mask_same_day, '종료일'] + pd.Timedelta(days=1)
     
-    # [3] 정기구독 데이터 로드 (헤더 자동 찾기 로직 🌟)
+    # [3] 정기구독 데이터 로드
     try:
         df_sub = pd.read_csv(get_csv_url('정기구독'))
-        
-        # 엑셀 첫 줄에 '브랜드별_매출통계' 등 제목이 있어서 컬럼이 밀린 경우 (헤더 재설정)
         if '날짜' not in df_sub.columns:
             mask = df_sub.astype(str).apply(lambda x: x.str.contains('날짜')).any(axis=1)
             if mask.any():
@@ -95,7 +94,6 @@ def load_data():
         df_sub['날짜'] = pd.to_datetime(df_sub['날짜'], errors='coerce')
         if '브랜드' not in df_sub.columns: df_sub['브랜드'] = '전체'
         
-        # '구독'이라는 단어가 들어간 열을 자동으로 찾아 금액 변환
         sub_col = [c for c in df_sub.columns if pd.notnull(c) and '구독' in str(c)]
         if sub_col:
             df_sub['정기구독_매출액'] = df_sub[sub_col[-1]].astype(str).replace(',', '', regex=True)
@@ -155,6 +153,38 @@ def load_data():
     
     # [7] 모든 데이터 하나로 병합
     df_main = pd.concat([df_total, df_cellti, df_triad] + influencer_dfs, ignore_index=True)
+    
+    # 🌟 [핵심] 메모리 다이어트 (Memory Optimization) 🌟
+    # 1. 병합 후 쓸모없어진 개별 덩어리 삭제
+    del df_total
+    del df_cellti
+    del df_triad
+    del influencer_dfs
+    gc.collect() # 찌꺼기 메모리 청소
+    
+    # 2. 문자열(Object)을 가벼운 카테고리(Category) 형식으로 압축
+    cat_cols = ['매체', '브랜드', '인플루언서명'] + [c for c in df_main.columns if 'CATEGORY' in c]
+    for col in cat_cols:
+        if col in df_main.columns:
+            df_main[col] = df_main[col].astype('category')
+            
+    # 3. 불필요하게 큰 숫자 용량 줄이기 (Downcast)
+    num_cols = df_main.select_dtypes(include=['float64', 'int64']).columns
+    for col in num_cols:
+        df_main[col] = pd.to_numeric(df_main[col], downcast='float')
+    # 🌟 메모리 다이어트 끝 🌟
+    
+    df_main['총매출액'] = (
+        df_main['신규방문_신규구매_매출액'].fillna(0) + df_main['신규방문_재구매_매출액'].fillna(0) + 
+        df_main['재방문_신규구매_매출액'].fillna(0) + df_main['재방문_재구매_매출액'].fillna(0)
+    )
+    df_main['총방문수'] = df_main['신규방문_총 방문수'].fillna(0) + df_main['재방문_총 방문수'].fillna(0)
+    df_main['총회원가입'] = df_main['신규방문_회원가입'].fillna(0) + df_main['재방문_회원가입'].fillna(0)
+    df_main['총구매수'] = (
+        df_main['신규방문_신규구매_건수'].fillna(0) + df_main['신규방문_재구매_건수'].fillna(0) +
+        df_main['재방문_신규구매_건수'].fillna(0) + df_main['재방문_재구매_건수'].fillna(0)
+    )
+    
     return df_main, df_campaign, df_sub
 
 df_all, df_camp_all, df_sub_all = load_data()
