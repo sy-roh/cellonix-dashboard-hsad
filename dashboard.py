@@ -40,7 +40,7 @@ st.markdown("""
     <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
     html, body, [class*="css"], [class*="st-"] { font-family: 'Pretendard', 'Noto Sans KR', sans-serif !important; }
-    .block-container { padding-top: 2rem !important; padding-bottom: 2rem !important; }
+    .block-container { padding-top: 2.5rem !important; padding-bottom: 2rem !important; }
     [data-testid="stMetricValue"] { font-size: 1.3rem !important; font-weight: 700 !important; color: #2c3e50; }
     [data-testid="stMetricLabel"] { font-size: 0.9rem !important; color: #7f8c8d; margin-bottom: -5px !important; font-weight: 600; }
     [data-testid="stMetricDelta"] { font-size: 0.8rem !important; }
@@ -80,19 +80,29 @@ def load_data():
     mask_same_day = df_campaign['시작일'] == df_campaign['종료일']
     df_campaign.loc[mask_same_day, '종료일'] = df_campaign.loc[mask_same_day, '종료일'] + pd.Timedelta(days=1)
     
-    # [3] 정기구독 데이터 로드 (에러 방어 및 '정기구독 할인금액' 등 컬럼 자동 추출)
+    # [3] 정기구독 데이터 로드 (헤더 자동 찾기 로직 🌟)
     try:
         df_sub = pd.read_csv(get_csv_url('정기구독'))
-        df_sub['날짜'] = pd.to_datetime(df_sub['날짜'], errors='coerce')
-        if '브랜드' not in df_sub.columns:
-            df_sub['브랜드'] = '전체'
         
-        sub_col = [c for c in df_sub.columns if '구독' in c]
+        # 엑셀 첫 줄에 '브랜드별_매출통계' 등 제목이 있어서 컬럼이 밀린 경우 (헤더 재설정)
+        if '날짜' not in df_sub.columns:
+            mask = df_sub.astype(str).apply(lambda x: x.str.contains('날짜')).any(axis=1)
+            if mask.any():
+                header_idx = mask.idxmax()
+                df_sub.columns = df_sub.iloc[header_idx]
+                df_sub = df_sub.iloc[header_idx+1:].reset_index(drop=True)
+                
+        df_sub['날짜'] = pd.to_datetime(df_sub['날짜'], errors='coerce')
+        if '브랜드' not in df_sub.columns: df_sub['브랜드'] = '전체'
+        
+        # '구독'이라는 단어가 들어간 열을 자동으로 찾아 금액 변환
+        sub_col = [c for c in df_sub.columns if pd.notnull(c) and '구독' in str(c)]
         if sub_col:
             df_sub['정기구독_매출액'] = df_sub[sub_col[-1]].astype(str).replace(',', '', regex=True)
             df_sub['정기구독_매출액'] = pd.to_numeric(df_sub['정기구독_매출액'], errors='coerce').fillna(0)
         else:
             df_sub['정기구독_매출액'] = 0
+            
     except Exception as e:
         df_sub = pd.DataFrame({'날짜': pd.to_datetime([]), '브랜드': [], '정기구독_매출액': []})
 
@@ -108,7 +118,7 @@ def load_data():
     df_triad['브랜드'] = '트리어드'
     df_triad['인플루언서명'] = None
     
-    # [6] 인플루언서 데이터 맵핑
+    # [6] 인플루언서 데이터 (전체 시트에서 추출)
     influencer_dfs = []
     str_cols = df_total.select_dtypes(include=['object']).columns
     is_meta_yt = df_total['매체'].astype(str).str.upper().isin(['META', '유튜브'])
@@ -143,20 +153,8 @@ def load_data():
                 else: df_inf['브랜드'] = '트리어드 인플루언서' 
                 influencer_dfs.append(df_inf)
     
-    # [7] 메인 데이터 병합
+    # [7] 모든 데이터 하나로 병합
     df_main = pd.concat([df_total, df_cellti, df_triad] + influencer_dfs, ignore_index=True)
-    
-    df_main['총매출액'] = (
-        df_main['신규방문_신규구매_매출액'].fillna(0) + df_main['신규방문_재구매_매출액'].fillna(0) + 
-        df_main['재방문_신규구매_매출액'].fillna(0) + df_main['재방문_재구매_매출액'].fillna(0)
-    )
-    df_main['총방문수'] = df_main['신규방문_총 방문수'].fillna(0) + df_main['재방문_총 방문수'].fillna(0)
-    df_main['총회원가입'] = df_main['신규방문_회원가입'].fillna(0) + df_main['재방문_회원가입'].fillna(0)
-    df_main['총구매수'] = (
-        df_main['신규방문_신규구매_건수'].fillna(0) + df_main['신규방문_재구매_건수'].fillna(0) +
-        df_main['재방문_신규구매_건수'].fillna(0) + df_main['재방문_재구매_건수'].fillna(0)
-    )
-    
     return df_main, df_campaign, df_sub
 
 df_all, df_camp_all, df_sub_all = load_data()
@@ -172,8 +170,10 @@ if not selected_brands:
     st.warning("👈 왼쪽 사이드바에서 분석할 브랜드를 하나 이상 선택해 주세요.")
     st.stop()
 
+# 1차 필터링
 df_filtered = df_all[df_all['브랜드'].isin(selected_brands)].copy()
 
+# 정기구독 데이터 필터링용 타겟 브랜드 산출
 sub_target_brands = set()
 if "전체" in selected_brands: sub_target_brands.update(["전체", "셀티아이", "트리어드"])
 else:
@@ -184,6 +184,7 @@ else:
 
 df_sub_filtered = df_sub_all[df_sub_all['브랜드'].isin(sub_target_brands)].copy() if sub_target_brands else df_sub_all.copy()
 
+# 2차 필터링: 인플루언서 추가/제거
 if any("인플루언서" in b for b in selected_brands):
     inf_list = df_filtered['인플루언서명'].dropna().unique().tolist()
     if inf_list:
@@ -194,6 +195,7 @@ if any("인플루언서" in b for b in selected_brands):
         df_filtered = df_filtered[mask_normal | mask_selected_inf]
         st.sidebar.markdown("---")
 
+# 3차 필터링: 날짜
 min_date = df_all['날짜'].min().date()
 max_date = df_all['날짜'].max().date()
 default_start_date = max_date.replace(day=1) 
@@ -202,12 +204,14 @@ date_range = st.sidebar.date_input("🗓️ 조회 기간", value=(default_start
 if len(date_range) == 2: start_date, end_date = date_range
 else: start_date, end_date = default_start_date, max_date 
 
+# 4차 필터링: 매체
 media_options = ["전체"] + list(df_all['매체'].dropna().unique())
 selected_media = st.sidebar.multiselect("📺 매체 선택", media_options, default=["전체"])
 
 if "전체" not in selected_media:
     df_filtered = df_filtered[df_filtered['매체'].isin(selected_media)]
 
+# 메인 및 구독 데이터 날짜 분리
 df_current = df_filtered[(df_filtered['날짜'].dt.date >= start_date) & (df_filtered['날짜'].dt.date <= end_date)]
 df_sub_current = df_sub_filtered[(df_sub_filtered['날짜'].dt.date >= start_date) & (df_sub_filtered['날짜'].dt.date <= end_date)]
 
@@ -221,11 +225,10 @@ display_title = " + ".join(selected_brands) if len(selected_brands) <= 2 else "�
 st.title(f"📈 공식몰 성과 대시보드 ({display_title})")
 
 # =========================================================
-# [순서 1] 깔끔하게 정리된 2단 KPI 요약
+# [순서 1] 1줄: 깔끔하게 정리된 유입/구매 건수 요약
 # =========================================================
 st.caption(f"※ 비교 기준: 선택한 기간({duration}일)과 동일한 직전 기간({prev_start_date} ~ {prev_end_date}) 대비")
 
-# --- 유입 및 구매 건수 계산 ---
 cur_total_visit = df_current['총방문수'].sum()
 cur_new_visit = df_current['신규방문_총 방문수'].sum()
 cur_ret_visit = df_current['재방문_총 방문수'].sum()
@@ -240,33 +243,33 @@ prev_total_buy = df_prev['총구매수'].sum()
 prev_new_buy = df_prev['신규방문_신규구매_건수'].sum() + df_prev['신규방문_재구매_건수'].sum()
 prev_ret_buy = df_prev['재방문_신규구매_건수'].sum() + df_prev['재방문_재구매_건수'].sum()
 
-# --- 매출 데이터 계산 (정기구독 합산 로직) ---
+st.markdown("#### 👥 유입 및 🛒 구매 건수")
+kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
+kpi1.metric("총 방문수", format_number(cur_total_visit), delta=calculate_delta(cur_total_visit, prev_total_visit))
+kpi2.metric("신규 방문수", format_number(cur_new_visit), delta=calculate_delta(cur_new_visit, prev_new_visit))
+kpi3.metric("재방문수", format_number(cur_ret_visit), delta=calculate_delta(cur_ret_visit, prev_ret_visit))
+kpi4.metric("총 구매", format_number(cur_total_buy), delta=calculate_delta(cur_total_buy, prev_total_buy))
+kpi5.metric("신규 구매", format_number(cur_new_buy), delta=calculate_delta(cur_new_buy, prev_new_buy))
+kpi6.metric("재방문 구매", format_number(cur_ret_buy), delta=calculate_delta(cur_ret_buy, prev_ret_buy))
+
+st.markdown("<hr style='margin:0.5rem 0'>", unsafe_allow_html=True)
+
+# =========================================================
+# [순서 1-2] 2줄: 핵심 매출액 요약 (총 매출 = 신규+재구매+구독)
+# =========================================================
 cur_new_rev = df_current['신규방문_신규구매_매출액'].sum() + df_current['신규방문_재구매_매출액'].sum()
 cur_ret_rev = df_current['재방문_신규구매_매출액'].sum() + df_current['재방문_재구매_매출액'].sum()
 cur_sub_rev = df_sub_current['정기구독_매출액'].sum()
-cur_grand_total_rev = cur_new_rev + cur_ret_rev + cur_sub_rev  # 신규 + 재구매 + 구독
+cur_grand_total_rev = cur_new_rev + cur_ret_rev + cur_sub_rev
 
 prev_new_rev = df_prev['신규방문_신규구매_매출액'].sum() + df_prev['신규방문_재구매_매출액'].sum()
 prev_ret_rev = df_prev['재방문_신규구매_매출액'].sum() + df_prev['재방문_재구매_매출액'].sum()
 prev_sub_rev = df_sub_prev['정기구독_매출액'].sum()
 prev_grand_total_rev = prev_new_rev + prev_ret_rev + prev_sub_rev
 
-# --- 레이아웃: 1번째 줄 (유입/구매 6칸) ---
-st.markdown("#### 👥 유입 및 🛒 구매 건수")
-kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
-kpi1.metric("총 방문수", format_number(cur_total_visit), delta=calculate_delta(cur_total_visit, prev_total_visit))
-kpi2.metric("신규 방문", format_number(cur_new_visit), delta=calculate_delta(cur_new_visit, prev_new_visit))
-kpi3.metric("재방문", format_number(cur_ret_visit), delta=calculate_delta(cur_ret_visit, prev_ret_visit))
-kpi4.metric("총 구매건수", format_number(cur_total_buy), delta=calculate_delta(cur_total_buy, prev_total_buy))
-kpi5.metric("신규 구매건수", format_number(cur_new_buy), delta=calculate_delta(cur_new_buy, prev_new_buy))
-kpi6.metric("재방문 구매건수", format_number(cur_ret_buy), delta=calculate_delta(cur_ret_buy, prev_ret_buy))
-
-st.markdown("<hr style='margin:0.5rem 0'>", unsafe_allow_html=True)
-
-# --- 레이아웃: 2번째 줄 (매출 4칸) ---
-st.markdown("#### 💰 핵심 매출액 요약")
+st.markdown("#### 💰 핵심 매출액 분석 (정기구독 포함)")
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("총 매출 (신규+재구매+구독)", format_currency(cur_grand_total_rev), delta=calculate_delta(cur_grand_total_rev, prev_grand_total_rev))
+m1.metric("🔥 총 매출", format_currency(cur_grand_total_rev), delta=calculate_delta(cur_grand_total_rev, prev_grand_total_rev))
 m2.metric("✨ 신규 매출", format_currency(cur_new_rev), delta=calculate_delta(cur_new_rev, prev_new_rev))
 m3.metric("🤝 재구매 매출", format_currency(cur_ret_rev), delta=calculate_delta(cur_ret_rev, prev_ret_rev))
 m4.metric("🔄 정기구독 매출", format_currency(cur_sub_rev), delta=calculate_delta(cur_sub_rev, prev_sub_rev))
