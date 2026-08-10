@@ -377,3 +377,60 @@ top_buy = df_current.groupby('매체')['총구매수'].sum().reset_index().sort_
 fig_top_buy = px.bar(top_buy, x='총구매수', y='매체', orientation='h', title='3. 구매 기준', text_auto='.0f', color_discrete_sequence=['#F48FB1'])
 fig_top_buy.update_layout(template="plotly_white", yaxis={'categoryorder':'total ascending'}, margin=dict(t=30, l=0, r=0, b=0), height=250)
 col_top3.plotly_chart(fig_top_buy, use_container_width=True)
+
+st.markdown("---")
+
+# =========================================================
+# [순서 5] 매체별 점유율 (파이차트)
+# =========================================================
+st.markdown("#### 🎯 매체별 점유율 (유입 및 전환)")
+df_media_eff = df_current.groupby('매체')[['총방문수', '총구매수']].sum().reset_index().sort_values('총방문수', ascending=False)
+col_pie1, col_pie2 = st.columns(2)
+
+with col_pie1:
+    fig_pie_visit = px.pie(df_media_eff, values='총방문수', names='매체', hole=0.4, title='유입 점유율 (트래픽 비중)', color_discrete_sequence=px.colors.sequential.Teal)
+    fig_pie_visit.update_traces(textposition='inside', textinfo='percent+label', showlegend=False)
+    fig_pie_visit.update_layout(template="plotly_white", margin=dict(t=40, b=0, l=0, r=0), height=350)
+    st.plotly_chart(fig_pie_visit, use_container_width=True)
+
+with col_pie2:
+    fig_pie_conv = px.pie(df_media_eff, values='총구매수', names='매체', hole=0.4, title='전환 점유율 (구매 비중)', color_discrete_sequence=px.colors.sequential.OrRd)
+    fig_pie_conv.update_traces(textposition='inside', textinfo='percent+label', showlegend=False)
+    fig_pie_conv.update_layout(template="plotly_white", margin=dict(t=40, b=0, l=0, r=0), height=350)
+    st.plotly_chart(fig_pie_conv, use_container_width=True)
+
+st.markdown("---")
+
+# =========================================================
+# [순서 6] 매체별 증감 추이 및 전체 현황표
+# =========================================================
+st.markdown("#### 🔄 비교 기간 대비 매체 운영 현황")
+st.caption("※ 설정된 기간과 직전 동일 기간을 비교합니다.")
+
+df_curr_media = df_current.groupby('매체')['총방문수'].sum().reset_index().rename(columns={'총방문수': '이번_유입수'})
+df_prev_media = df_prev.groupby('매체')['총방문수'].sum().reset_index().rename(columns={'총방문수': '이전_유입수'})
+df_compare = pd.merge(df_prev_media, df_curr_media, on='매체', how='outer').fillna(0)
+
+def get_media_status(row):
+    if row['이전_유입수'] == 0 and row['이번_유입수'] > 0: return "🆕 신규 진입"
+    elif row['이전_유입수'] > 0 and row['이번_유입수'] == 0: return "⏸️ 운영 중단"
+    elif row['이번_유입수'] > row['이전_유입수']: return "🔼 유입 증가"
+    elif row['이번_유입수'] < row['이전_유입수']: return "🔽 유입 감소"
+    else: return "▶️ 유지"
+
+df_compare['상태'] = df_compare.apply(get_media_status, axis=1)
+df_compare['증감량'] = df_compare['이번_유입수'] - df_compare['이전_유입수']
+df_compare['증감률(%)'] = df_compare.apply(lambda r: ((r['이번_유입수'] - r['이전_유입수']) / r['이전_유입수'] * 100) if r['이전_유입수'] != 0 else 0, axis=1)
+df_compare = df_compare[['상태', '매체', '이전_유입수', '이번_유입수', '증감량', '증감률(%)']].sort_values(by='이번_유입수', ascending=False)
+
+st.dataframe(
+    df_compare, use_container_width=True, hide_index=True,
+    column_config={
+        "상태": st.column_config.TextColumn("상태", width="medium"),
+        "매체": st.column_config.TextColumn("매체명", width="medium"),
+        "이전_유입수": st.column_config.NumberColumn("이전 기간 유입", format="%d"),
+        "이번_유입수": st.column_config.NumberColumn("이번 기간 유입", format="%d"),
+        "증감량": st.column_config.NumberColumn("증감량", format="%d"),
+        "증감률(%)": st.column_config.NumberColumn("증감률", format="%.1f%%")
+    }
+)
