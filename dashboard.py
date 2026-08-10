@@ -157,8 +157,9 @@ def load_data():
             df_sub['정기구독할인금액']
         )
 
-        # 공식몰 실매출용:
+        # 공식몰 매출 원액(차감 전):
         # 신규 구매 + 재 구매
+        # 실제 KPI에서는 트리어드 정기구독 할인금액을 별도 차감
         df_sub['브랜드_실매출'] = (
             df_sub['신규구매_실매출']
             + df_sub['재구매_실매출']
@@ -499,8 +500,13 @@ prev_log_total_rev = (
 )
 
 # -------------------------
-# 공식몰 실매출
+# 공식몰 실매출 + 정기구독
 # 정기구독 시트 기준
+#
+# 공식몰 실매출은 '정기구독 할인금액'을 제외한 순매출로 계산
+# - 전체: (셀티아이 + 트리어드 신규구매/재구매) - 트리어드 정기구독
+# - 트리어드: 트리어드 신규구매/재구매 - 트리어드 정기구독
+# - 셀티아이: 셀티아이 신규구매/재구매 (차감 없음)
 # -------------------------
 if "전체" in effective_brands:
     official_target_brands = ['셀티아이', '트리어드']
@@ -514,18 +520,7 @@ else:
         if "트리어드" in b and "트리어드" not in official_target_brands:
             official_target_brands.append("트리어드")
 
-cur_official_actual = df_sub_current[
-    df_sub_current['브랜드'].isin(official_target_brands)
-]['브랜드_실매출'].sum()
-
-prev_official_actual = df_sub_prev[
-    df_sub_prev['브랜드'].isin(official_target_brands)
-]['브랜드_실매출'].sum()
-
-# -------------------------
-# 정기구독
-# 트리어드만 집계
-# -------------------------
+# 정기구독은 트리어드가 선택 범위에 포함될 때만 차감/표시
 show_triad_subscription = (
     "전체" in effective_brands
     or any("트리어드" in b for b in effective_brands)
@@ -543,11 +538,31 @@ else:
     cur_subscription_log = 0
     prev_subscription_log = 0
 
+# 차감 전 공식몰 매출
+cur_official_gross = df_sub_current[
+    df_sub_current['브랜드'].isin(official_target_brands)
+]['브랜드_실매출'].sum()
+
+prev_official_gross = df_sub_prev[
+    df_sub_prev['브랜드'].isin(official_target_brands)
+]['브랜드_실매출'].sum()
+
+# 최종 공식몰 실매출 = 차감 전 매출 - 트리어드 정기구독 할인금액
+cur_official_actual = (
+    cur_official_gross
+    - cur_subscription_log
+)
+
+prev_official_actual = (
+    prev_official_gross
+    - prev_subscription_log
+)
+
 st.markdown("#### 💰 매출 요약")
 
 st.caption(
     "※ 공식몰 실매출은 정기구독 시트의 셀티아이·트리어드 "
-    "'신규 구매 + 재 구매' 합계입니다. "
+    "'신규 구매 + 재 구매'에서 트리어드 '정기구독 할인금액'을 제외한 순매출입니다. "
     "로그 매출 합계는 전체 시트의 로그 신규 매출 + 로그 재방문 매출이며, "
     "정기구독은 트리어드의 '정기구독 할인금액'입니다."
 )
@@ -567,7 +582,8 @@ m1.metric(
     ),
     help=(
         "정기구독 시트 기준: "
-        "셀티아이 + 트리어드의 신규 구매 + 재 구매"
+        "셀티아이 + 트리어드의 신규 구매 + 재 구매 "
+        "- 트리어드 정기구독 할인금액"
     )
 )
 
