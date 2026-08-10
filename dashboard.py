@@ -487,6 +487,17 @@ prev_log_return_rev = (
     + df_prev['재방문_재구매_매출액'].sum()
 )
 
+# 로그 매출 합계
+cur_log_total_rev = (
+    cur_log_new_rev
+    + cur_log_return_rev
+)
+
+prev_log_total_rev = (
+    prev_log_new_rev
+    + prev_log_return_rev
+)
+
 # -------------------------
 # 공식몰 실매출
 # 정기구독 시트 기준
@@ -537,11 +548,15 @@ st.markdown("#### 💰 매출 요약")
 st.caption(
     "※ 공식몰 실매출은 정기구독 시트의 셀티아이·트리어드 "
     "'신규 구매 + 재 구매' 합계입니다. "
-    "로그 신규·재방문 매출은 전체 시트의 매체 로그 기준이며, "
+    "로그 매출 합계는 전체 시트의 로그 신규 매출 + 로그 재방문 매출이며, "
     "정기구독은 트리어드의 '정기구독 할인금액'입니다."
 )
 
-m1, m2, m3, m4 = st.columns(4)
+# KPI 5개 + 그룹 구분선
+# 공식몰 실매출 │ 로그 매출 합계 / 신규 / 재방문 │ 정기구독
+m1, sep1, m2, m3, m4, sep2, m5 = st.columns(
+    [1.25, 0.06, 1.15, 1.15, 1.15, 0.06, 1.15]
+)
 
 m1.metric(
     "🔥 공식몰 실매출",
@@ -556,7 +571,23 @@ m1.metric(
     )
 )
 
+with sep1:
+    st.markdown(
+        "<div style='border-left:1px solid #D9D9D9;height:92px;margin:6px auto 0 auto;width:1px;'></div>",
+        unsafe_allow_html=True
+    )
+
 m2.metric(
+    "📊 로그 매출 합계",
+    format_currency(cur_log_total_rev),
+    delta=calculate_delta(
+        cur_log_total_rev,
+        prev_log_total_rev
+    ),
+    help="전체 시트 기준: 로그 신규 매출 + 로그 재방문 매출"
+)
+
+m3.metric(
     "✨ 로그 신규 매출",
     format_currency(cur_log_new_rev),
     delta=calculate_delta(
@@ -566,7 +597,7 @@ m2.metric(
     help="전체 시트의 신규방문 구매 매출"
 )
 
-m3.metric(
+m4.metric(
     "🤝 로그 재방문 매출",
     format_currency(cur_log_return_rev),
     delta=calculate_delta(
@@ -576,7 +607,13 @@ m3.metric(
     help="전체 시트의 재방문 구매 매출"
 )
 
-m4.metric(
+with sep2:
+    st.markdown(
+        "<div style='border-left:1px solid #D9D9D9;height:92px;margin:6px auto 0 auto;width:1px;'></div>",
+        unsafe_allow_html=True
+    )
+
+m5.metric(
     "🔄 정기구독",
     format_currency(cur_subscription_log),
     delta=calculate_delta(
