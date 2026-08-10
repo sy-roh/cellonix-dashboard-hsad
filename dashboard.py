@@ -67,15 +67,21 @@ def load_data():
         encoded_name = urllib.parse.quote(sheet_name)
         return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}"
     
-    # [1] 전체 데이터 읽어오기
+    # [1] 전체 트래픽 및 캠페인 데이터 읽어오기
     df_total = pd.read_csv(get_csv_url('전체'))
+    df_total['날짜'] = pd.to_datetime(df_total['날짜'])
     
-    # ==== 🌟 인플루언서 데이터 추출 자동화 🌟 ====
+    df_campaign = pd.read_csv(get_csv_url('캠페인'))
+    df_campaign['시작일'] = pd.to_datetime(df_campaign['시작일'])
+    df_campaign['종료일'] = pd.to_datetime(df_campaign['종료일'])
+    mask_same_day = df_campaign['시작일'] == df_campaign['종료일']
+    df_campaign.loc[mask_same_day, '종료일'] = df_campaign.loc[mask_same_day, '종료일'] + pd.Timedelta(days=1)
+    
+    # ==== 🌟 인플루언서 기간+태그 크로스체크 추출 🌟 ====
     str_cols = df_total.select_dtypes(include=['object']).columns
     is_meta_yt = df_total['매체'].astype(str).str.upper().isin(['META', '유튜브'])
     
-    # 인플루언서별 정규식 패턴 (한글, 영문, 별명 모두 포함)
-    influencers_dict = {
+    inf_keywords = {
         '문지애': r'(?i)문지애|jiae|지애',
         '김미경': r'(?i)김미경|mikyung|mkyu|미경',
         '채정안': r'(?i)채정안|jungan|정안',
@@ -86,21 +92,35 @@ def load_data():
     
     influencer_dfs = []
     
-    for name, pattern in influencers_dict.items():
-        # 해당 인플루언서 패턴이 카테고리에 포함되어 있는지 검사
-        mask = is_meta_yt & df_total[str_cols].apply(lambda x: x.astype(str).str.contains(pattern)).any(axis=1)
-        df_inf = df_total[mask].copy()
+    # 캠페인 시트에서 '인플루언서' 관련 일정만 필터링
+    df_inf_campaigns = df_campaign[df_campaign['구분'] == '인플루언서']
+    
+    for idx, row in df_inf_campaigns.iterrows():
+        inf_name = row['내용']
         
-        if not df_inf.empty:
-            df_inf['인플루언서명'] = name
+        if inf_name in inf_keywords:
+            pattern = inf_keywords[inf_name]
             
-            # 브랜드 할당 (문지애 -> 셀티아이, 나머지 -> 트리어드)
-            if name == '문지애':
-                df_inf['브랜드'] = '셀티아이 인플루언서'
-            else:
-                df_inf['브랜드'] = '트리어드 인플루언서'
-                
-            influencer_dfs.append(df_inf)
+            # 날짜 크로스체크: 캠페인 시작일 ~ 종료일 + 여운 트래픽(14일) 버퍼 적용
+            start_date = row['시작일']
+            end_date = row['종료일'] + pd.Timedelta(days=14)
+            is_valid_date = (df_total['날짜'] >= start_date) & (df_total['날짜'] <= end_date)
+            
+            # 키워드 매칭
+            has_keyword = df_total[str_cols].apply(lambda x: x.astype(str).str.contains(pattern)).any(axis=1)
+            
+            # 조건 1(매체) + 조건 2(날짜) + 조건 3(키워드) 완벽 일치 교집합 찾기
+            df_inf = df_total[is_meta_yt & is_valid_date & has_keyword].copy()
+            
+            if not df_inf.empty:
+                df_inf['인플루언서명'] = inf_name
+                # 브랜드 맵핑 룰
+                if inf_name == '문지애':
+                    df_inf['브랜드'] = '셀티아이 인플루언서'
+                else:
+                    df_inf['브랜드'] = '트리어드 인플루언서'
+                    
+                influencer_dfs.append(df_inf)
     # ============================================
     
     df_total['브랜드'] = '전체'
@@ -108,16 +128,17 @@ def load_data():
     
     # [2] 셀티아이 / 트리어드 개별 데이터 읽어오기
     df_cellti = pd.read_csv(get_csv_url('셀티아이'))
+    df_cellti['날짜'] = pd.to_datetime(df_cellti['날짜'])
     df_cellti['브랜드'] = '셀티아이'
     df_cellti['인플루언서명'] = None
     
     df_triad = pd.read_csv(get_csv_url('트리어드'))
+    df_triad['날짜'] = pd.to_datetime(df_triad['날짜'])
     df_triad['브랜드'] = '트리어드'
     df_triad['인플루언서명'] = None
     
     # [3] 총 5가지 브랜드를 하나의 메인 데이터로 결합
     df_main = pd.concat([df_total, df_cellti, df_triad] + influencer_dfs, ignore_index=True)
-    df_main['날짜'] = pd.to_datetime(df_main['날짜'])
     
     df_main['총매출액'] = (
         df_main['신규방문_신규구매_매출액'].fillna(0) + df_main['신규방문_재구매_매출액'].fillna(0) + 
@@ -129,13 +150,6 @@ def load_data():
         df_main['신규방문_신규구매_건수'].fillna(0) + df_main['신규방문_재구매_건수'].fillna(0) +
         df_main['재방문_신규구매_건수'].fillna(0) + df_main['재방문_재구매_건수'].fillna(0)
     )
-    
-    # 캠페인 일정 데이터 로드
-    df_campaign = pd.read_csv(get_csv_url('캠페인'))
-    df_campaign['시작일'] = pd.to_datetime(df_campaign['시작일'])
-    df_campaign['종료일'] = pd.to_datetime(df_campaign['종료일'])
-    mask_same_day = df_campaign['시작일'] == df_campaign['종료일']
-    df_campaign.loc[mask_same_day, '종료일'] = df_campaign.loc[mask_same_day, '종료일'] + pd.Timedelta(days=1)
     
     return df_main, df_campaign
 
@@ -152,12 +166,14 @@ selected_brand = st.sidebar.selectbox("브랜드 선택", brand_options)
 df_filtered = df_all.copy()
 df_filtered = df_filtered[df_filtered['브랜드'] == selected_brand]
 
-# 2차 필터링: 인플루언서 개별 선택 (인플루언서 브랜드를 선택했을 때만 등장)
+# 2차 필터링: 인플루언서 개별 다중 선택 (인플루언서 브랜드 선택 시에만 등장)
 if "인플루언서" in selected_brand:
     inf_list = df_filtered['인플루언서명'].dropna().unique().tolist()
     if inf_list:
+        st.sidebar.markdown("---")
         selected_infs = st.sidebar.multiselect("👤 인플루언서 선택 (체크박스)", inf_list, default=inf_list)
         df_filtered = df_filtered[df_filtered['인플루언서명'].isin(selected_infs)]
+        st.sidebar.markdown("---")
 
 # 3차 필터링: 날짜
 min_date = df_all['날짜'].min().date()
@@ -258,7 +274,6 @@ st.plotly_chart(fig_trend, use_container_width=True)
 if not df_camp_all.empty:
     camp_df = df_camp_all.copy()
     
-    # 🌟 인플루언서 옵션 선택 시에도 해당 모(母)브랜드의 캠페인을 보여주도록 처리
     if selected_brand == "셀티아이 인플루언서":
         camp_df = camp_df[camp_df['브랜드'] == "셀티아이"]
     elif selected_brand == "트리어드 인플루언서":
