@@ -17,7 +17,7 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.text_input("🔒 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
+        st.text_input("🔒 광고주 전용 대시보드입니다. 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
         st.text_input("❌ 비밀번호가 틀렸습니다. 다시 입력하세요.", type="password", on_change=password_entered, key="password")
@@ -77,14 +77,98 @@ def load_data():
     except:
         df_sub = pd.DataFrame({'날짜': pd.to_datetime([]), '브랜드': [], '정기구독_매출액': []})
 
-    df_cellti = pd.read_csv(get_csv_url('셀티아이'))
-    df_cellti['날짜'] = pd.to_datetime(df_cellti['날짜'], errors='coerce')
-    df_cellti['브랜드'] = '셀티아이'
-    
-    df_triad = pd.read_csv(get_csv_url('트리어드'))
-    df_triad['날짜'] = pd.to_datetime(df_triad['날짜'], errors='coerce')
-    df_triad['브랜드'] = '트리어드'
-    
+    # -----------------------------------------------------
+    # 브랜드 데이터 생성
+    # '셀티아이' / '트리어드' 개별 시트 대신 '전체' 시트에서 생성
+    # -----------------------------------------------------
+    UNCLASSIFIED_RATIO = {
+        '셀티아이': 0.6017037623023724,   # 화면상 60.17%
+        '트리어드': 0.30672158945459616, # 화면상 30.67%
+        '기타': 0.09157464824303162,      # 화면상 9.16%
+    }
+
+    revenue_cols = [
+        '신규방문_신규구매_매출액',
+        '신규방문_재구매_매출액',
+        '재방문_신규구매_매출액',
+        '재방문_재구매_매출액',
+    ]
+
+    # 매출 컬럼 숫자형 정리
+    for col in revenue_cols:
+        if col in df_total.columns:
+            df_total[col] = pd.to_numeric(
+                df_total[col].astype(str).str.replace(',', '', regex=False),
+                errors='coerce'
+            ).fillna(0)
+
+    # CATEGORY_1 ~ CATEGORY_5 태그 자동 탐색
+    expected_category_cols = {f'CATEGORY_{i}' for i in range(1, 6)}
+    category_cols = [
+        c for c in df_total.columns
+        if str(c).strip().upper() in expected_category_cols
+    ]
+
+    if not category_cols:
+        raise ValueError("전체 시트에서 CATEGORY_1~CATEGORY_5 컬럼을 찾을 수 없습니다.")
+
+    category_text = (
+        df_total[category_cols]
+        .fillna('')
+        .astype(str)
+        .agg(' | '.join, axis=1)
+    )
+
+    has_cellti = category_text.str.contains('셀티아이', case=False, regex=False)
+    has_triad = category_text.str.contains('트리어드', case=False, regex=False)
+
+    # 둘 중 하나만 명확히 태깅된 행만 직접 귀속
+    cellti_mask = has_cellti & ~has_triad
+    triad_mask = has_triad & ~has_cellti
+
+    # 태그 없음 또는 두 브랜드가 동시에 들어간 행은 미분류
+    unclassified_mask = ~(cellti_mask | triad_mask)
+
+    # 명확한 태그 데이터는 전체 시트에서 그대로 사용
+    df_cellti_tagged = df_total[cellti_mask].copy()
+    df_cellti_tagged['브랜드'] = '셀티아이'
+
+    df_triad_tagged = df_total[triad_mask].copy()
+    df_triad_tagged['브랜드'] = '트리어드'
+
+    df_unclassified = df_total[unclassified_mask].copy()
+
+    def make_allocated_revenue_rows(source_df, brand_name, ratio):
+        """미분류 행은 매출액만 비율 배분하고 기타 지표는 중복 합산하지 않음."""
+        allocated = source_df.copy()
+        allocated['브랜드'] = brand_name
+
+        # 방문/가입/구매건수 등 숫자 지표는 중복 방지를 위해 0
+        numeric_cols = allocated.select_dtypes(include='number').columns.tolist()
+        non_revenue_numeric_cols = [c for c in numeric_cols if c not in revenue_cols]
+        if non_revenue_numeric_cols:
+            allocated[non_revenue_numeric_cols] = 0
+
+        # 매출액만 지정 비율로 자동 배분
+        for col in revenue_cols:
+            if col in allocated.columns:
+                allocated[col] = allocated[col].fillna(0) * ratio
+
+        return allocated
+
+    df_cellti_alloc = make_allocated_revenue_rows(
+        df_unclassified, '셀티아이', UNCLASSIFIED_RATIO['셀티아이']
+    )
+    df_triad_alloc = make_allocated_revenue_rows(
+        df_unclassified, '트리어드', UNCLASSIFIED_RATIO['트리어드']
+    )
+    df_other = make_allocated_revenue_rows(
+        df_unclassified, '기타', UNCLASSIFIED_RATIO['기타']
+    )
+
+    df_cellti = pd.concat([df_cellti_tagged, df_cellti_alloc], ignore_index=True)
+    df_triad = pd.concat([df_triad_tagged, df_triad_alloc], ignore_index=True)
+
     # 인플루언서 매핑
     influencer_dfs = []
     str_cols = df_total.select_dtypes(include=['object']).columns
@@ -110,7 +194,7 @@ def load_data():
                 df_inf['브랜드'] = '셀티아이 인플루언서' if inf_name == '문지애' else '트리어드 인플루언서'
                 influencer_dfs.append(df_inf)
     
-    df_main = pd.concat([df_total, df_cellti, df_triad] + influencer_dfs, ignore_index=True)
+    df_main = pd.concat([df_total, df_cellti, df_triad, df_other] + influencer_dfs, ignore_index=True)
     gc.collect()
     
     df_main['총매출액'] = (df_main['신규방문_신규구매_매출액'].fillna(0) + df_main['신규방문_재구매_매출액'].fillna(0) + df_main['재방문_신규구매_매출액'].fillna(0) + df_main['재방문_재구매_매출액'].fillna(0))
@@ -126,25 +210,31 @@ df_all, df_camp_all, df_sub_all = load_data()
 # 사이드바 필터
 # ---------------------------------------------------------
 st.sidebar.header("📊 필터")
-brand_options = ["전체", "셀티아이", "셀티아이 인플루언서", "트리어드", "트리어드 인플루언서"]
+brand_options = ["전체", "셀티아이", "셀티아이 인플루언서", "트리어드", "트리어드 인플루언서", "기타"]
 selected_brands = st.sidebar.multiselect("📌 브랜드 선택", brand_options, default=["전체"])
 
 if not selected_brands:
     st.warning("👈 브랜드를 선택해 주세요.")
     st.stop()
 
-df_filtered = df_all[df_all['브랜드'].isin(selected_brands)].copy()
+# 전체 + 개별 브랜드 동시 선택 시 원본이 중복 합산되는 것을 방지
+effective_brands = ["전체"] if "전체" in selected_brands else selected_brands
+df_filtered = df_all[df_all['브랜드'].isin(effective_brands)].copy()
 
 sub_target_brands = set()
-if "전체" in selected_brands: sub_target_brands.update(["전체", "셀티아이", "트리어드"])
+if "전체" in effective_brands: sub_target_brands.update(["전체", "셀티아이", "트리어드"])
 else:
-    for b in selected_brands:
+    for b in effective_brands:
         if "셀티아이" in b: sub_target_brands.add("셀티아이")
         if "트리어드" in b: sub_target_brands.add("트리어드")
 
-df_sub_filtered = df_sub_all[df_sub_all['브랜드'].isin(sub_target_brands)].copy() if sub_target_brands else df_sub_all.copy()
+df_sub_filtered = (
+    df_sub_all[df_sub_all['브랜드'].isin(sub_target_brands)].copy()
+    if sub_target_brands
+    else df_sub_all.iloc[0:0].copy()
+)
 
-if any("인플루언서" in b for b in selected_brands):
+if any("인플루언서" in b for b in effective_brands):
     inf_list = df_filtered.get('인플루언서명', pd.Series()).dropna().unique().tolist()
     if inf_list:
         selected_infs = st.sidebar.multiselect("👤 인플루언서 온/오프", inf_list, default=inf_list)
@@ -238,9 +328,9 @@ st.plotly_chart(fig_trend, use_container_width=True)
 if not df_camp_all.empty:
     camp_df = df_camp_all.copy()
     camp_target_brands = set()
-    if "전체" in selected_brands: camp_target_brands.update(["전체", "셀티아이", "트리어드"])
+    if "전체" in effective_brands: camp_target_brands.update(["전체", "셀티아이", "트리어드"])
     else:
-        for b in selected_brands:
+        for b in effective_brands:
             if "셀티아이" in b: camp_target_brands.add("셀티아이")
             if "트리어드" in b: camp_target_brands.add("트리어드")
     camp_df = camp_df[camp_df['브랜드'].isin(camp_target_brands)]
