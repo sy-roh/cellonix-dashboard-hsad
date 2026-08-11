@@ -306,12 +306,7 @@ def load_data():
 
     return df_main, df_campaign, df_sub, load_info
 
-# 구글 시트 수정 직후 캐시 때문에 예전 데이터가 보이는 경우를 방지
-if st.sidebar.button("🔄 구글 시트 데이터 새로고침", use_container_width=True):
-    st.cache_data.clear()
-    st.rerun()
-
-df_all, df_camp_all, df_sub_all, load_info = load_data()
+df_all, df_camp_all, df_sub_all, _load_info = load_data()
 
 # 날짜 파싱 상태 진단
 valid_dates = df_all['날짜'].dropna()
@@ -324,16 +319,6 @@ if valid_dates.empty:
 # ---------------------------------------------------------
 st.sidebar.header("📊 필터")
 
-with st.sidebar.expander("🩺 데이터 연결 상태", expanded=False):
-    st.write(f"전체 시트 정상 날짜 행: {load_info['total_rows_loaded']:,}행")
-    st.write(f"날짜 파싱 실패: {load_info['invalid_date_count']:,}행")
-    if pd.notnull(load_info['min_date']) and pd.notnull(load_info['max_date']):
-        st.write(
-            "읽힌 날짜 범위: "
-            f"{load_info['min_date'].date()} ~ {load_info['max_date'].date()}"
-        )
-    if load_info['invalid_date_count'] > 0:
-        st.warning("날짜로 변환하지 못한 행이 있습니다. Google Sheet의 날짜 값을 확인해 주세요.")
 brand_options = ["전체", "셀티아이", "셀티아이 인플루언서", "트리어드", "트리어드 인플루언서", "기타"]
 selected_brands = st.sidebar.multiselect("📌 브랜드 선택", brand_options, default=["전체"])
 
