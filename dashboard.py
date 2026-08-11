@@ -34,6 +34,33 @@ def calculate_delta(current_val, prev_val):
     return f"{((current_val - prev_val) / prev_val) * 100:.1f}%"
 
 # ---------------------------------------------------------
+# 날짜 파싱
+# ---------------------------------------------------------
+def parse_date_series(series):
+    """
+    구글 시트에서 날짜 표시 형식이 섞여 있어도 안전하게 파싱합니다.
+    예: 2025-06-01 / 2026. 1. 1 / 2026/01/01 / 2026-01-01 00:00:00
+    """
+    raw = series.astype("string").str.strip()
+
+    # Pandas 2.x는 첫 행의 날짜 형식을 기준으로 추론할 수 있으므로
+    # format='mixed'를 사용해 각 행을 개별적으로 해석합니다.
+    parsed = pd.to_datetime(raw, errors="coerce", format="mixed")
+
+    # 혹시 구글 시트/엑셀 일련번호 형태로 넘어온 날짜가 있으면 한 번 더 복구
+    numeric = pd.to_numeric(raw, errors="coerce")
+    serial_mask = parsed.isna() & numeric.between(20000, 80000)
+    if serial_mask.any():
+        parsed.loc[serial_mask] = pd.to_datetime(
+            numeric.loc[serial_mask],
+            unit="D",
+            origin="1899-12-30",
+            errors="coerce"
+        )
+
+    return parsed
+
+# ---------------------------------------------------------
 # 데이터 로드
 # ---------------------------------------------------------
 @st.cache_data(ttl=600, max_entries=1)
@@ -45,12 +72,12 @@ def load_data():
         return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={urllib.parse.quote(sheet_name)}"
         
     df_total = pd.read_csv(get_csv_url('전체'))
-    df_total['날짜'] = pd.to_datetime(df_total['날짜'], errors='coerce') 
+    df_total['날짜'] = parse_date_series(df_total['날짜'])
     df_total['브랜드'] = '전체'
     
     df_campaign = pd.read_csv(get_csv_url('캠페인'))
-    df_campaign['시작일'] = pd.to_datetime(df_campaign['시작일'], errors='coerce')
-    df_campaign['종료일'] = pd.to_datetime(df_campaign['종료일'], errors='coerce')
+    df_campaign['시작일'] = parse_date_series(df_campaign['시작일'])
+    df_campaign['종료일'] = parse_date_series(df_campaign['종료일'])
     df_campaign.loc[df_campaign['시작일'] == df_campaign['종료일'], '종료일'] += pd.Timedelta(days=1)
     
     # 정기구독 시트 읽기
@@ -94,7 +121,7 @@ def load_data():
         if missing_cols:
             raise ValueError("정기구독 시트에서 필요한 컬럼을 찾지 못했습니다: " + ", ".join(missing_cols))
 
-        df_sub['날짜'] = pd.to_datetime(df_sub['날짜'], errors='coerce')
+        df_sub['날짜'] = parse_date_series(df_sub['날짜'])
 
         df_sub['브랜드'] = (
             df_sub['브랜드']
@@ -238,7 +265,18 @@ def load_data():
     
     return df_main, df_campaign, df_sub
 
+# 구글 시트 수정 직후 캐시 때문에 예전 데이터가 보이는 경우를 방지
+if st.sidebar.button("🔄 구글 시트 데이터 새로고침", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+
 df_all, df_camp_all, df_sub_all = load_data()
+
+# 날짜 파싱 상태 진단
+valid_dates = df_all['날짜'].dropna()
+if valid_dates.empty:
+    st.error("전체 시트의 날짜를 하나도 읽지 못했습니다. '날짜' 열의 값/형식을 확인해 주세요.")
+    st.stop()
 
 # ---------------------------------------------------------
 # 사이드바 필터
@@ -275,17 +313,39 @@ if any("인플루언서" in b for b in effective_brands):
         selected_infs = st.sidebar.multiselect("👤 인플루언서 온/오프", inf_list, default=inf_list)
         df_filtered = df_filtered[df_filtered['인플루언서명'].isna() | df_filtered['인플루언서명'].isin(selected_infs)]
 
-min_date, max_date = df_all['날짜'].min().date(), df_all['날짜'].max().date()
+valid_dates = df_all['날짜'].dropna()
+min_date = valid_dates.min().date()
+max_date = valid_dates.max().date()
 
 # 🌟 빠른 월 선택 기능 (1월 ~ 12월 버튼)
 if 'my_date_picker' not in st.session_state:
     st.session_state['my_date_picker'] = (max_date.replace(day=1), max_date)
+else:
+    # 데이터 범위가 바뀌었는데 기존 세션의 날짜가 범위를 벗어난 경우 자동 보정
+    saved = st.session_state['my_date_picker']
+    try:
+        saved_start, saved_end = saved if len(saved) == 2 else (saved[0], saved[0])
+        if saved_start < min_date or saved_end > max_date:
+            st.session_state['my_date_picker'] = (max_date.replace(day=1), max_date)
+    except Exception:
+        st.session_state['my_date_picker'] = (max_date.replace(day=1), max_date)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**🗓️ 빠른 월 선택**")
 
-years = list(range(min_date.year, max_date.year + 1))
-selected_year = st.sidebar.selectbox("연도", years, index=years.index(max_date.year), label_visibility="collapsed")
+# 실제로 읽힌 연도만 노출
+years = sorted(valid_dates.dt.year.dropna().astype(int).unique().tolist())
+selected_year = st.sidebar.selectbox(
+    "연도",
+    years,
+    index=len(years) - 1,
+    label_visibility="collapsed"
+)
+
+st.sidebar.caption(
+    f"데이터 날짜 범위: {min_date} ~ {max_date} "
+    f"({', '.join(map(str, years))})"
+)
 
 def set_month(y, m):
     s_date = pd.Timestamp(y, m, 1).date()
