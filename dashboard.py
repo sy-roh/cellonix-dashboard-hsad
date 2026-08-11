@@ -68,21 +68,55 @@ def load_data():
     raw_url = st.secrets["gsheet_url"]
     sheet_id = raw_url.split("/d/")[1].split("/")[0]
     
+    # -----------------------------------------------------
+    # Google Sheet CSV 로드
+    # -----------------------------------------------------
+    # 현재 '전체' 시트는 2025-09-30까지 실제 DATE 타입,
+    # 2025-10-01부터 STRING 타입으로 저장되어 있습니다.
+    # gviz/tq는 컬럼 타입을 하나로 추론하므로 혼합 타입에서 값이 누락될 수 있어
+    # 일반 CSV export + gid 방식으로 읽습니다.
+    SHEET_GIDS = {
+        '전체': 1355648508,
+        '캠페인': 1752209461,
+        '정기구독': 1078181767,
+    }
+
     def get_csv_url(sheet_name):
-        return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={urllib.parse.quote(sheet_name)}"
-        
-    df_total = pd.read_csv(get_csv_url('전체'))
+        if sheet_name not in SHEET_GIDS:
+            raise KeyError(f"등록되지 않은 시트입니다: {sheet_name}")
+        gid = SHEET_GIDS[sheet_name]
+        return (
+            f"https://docs.google.com/spreadsheets/d/{sheet_id}/export"
+            f"?format=csv&gid={gid}"
+        )
+
+    def read_sheet_csv(sheet_name, **kwargs):
+        return pd.read_csv(
+            get_csv_url(sheet_name),
+            low_memory=False,
+            **kwargs
+        )
+
+    # 날짜를 무조건 문자열로 먼저 받아 Google Sheet 내부 타입 차이를 무시
+    df_total = read_sheet_csv('전체', dtype={'날짜': 'string'})
+    raw_total_date = df_total['날짜'].copy()
     df_total['날짜'] = parse_date_series(df_total['날짜'])
+
+    invalid_date_mask = raw_total_date.notna() & df_total['날짜'].isna()
+    invalid_date_count = int(invalid_date_mask.sum())
+
+    # 날짜를 읽지 못한 행은 기간 분석에서 제외
+    df_total = df_total[df_total['날짜'].notna()].copy()
     df_total['브랜드'] = '전체'
-    
-    df_campaign = pd.read_csv(get_csv_url('캠페인'))
+
+    df_campaign = read_sheet_csv('캠페인')
     df_campaign['시작일'] = parse_date_series(df_campaign['시작일'])
     df_campaign['종료일'] = parse_date_series(df_campaign['종료일'])
     df_campaign.loc[df_campaign['시작일'] == df_campaign['종료일'], '종료일'] += pd.Timedelta(days=1)
     
     # 정기구독 시트 읽기
     try:
-        df_sub = pd.read_csv(get_csv_url('정기구독'))
+        df_sub = read_sheet_csv('정기구독')
 
         raw_cols = [str(c).strip() for c in df_sub.columns]
         if not any(str(c).replace(' ', '') == '날짜' for c in raw_cols):
@@ -263,14 +297,21 @@ def load_data():
     df_main['총회원가입'] = df_main['신규방문_회원가입'].fillna(0) + df_main['재방문_회원가입'].fillna(0)
     df_main['총구매수'] = (df_main['신규방문_신규구매_건수'].fillna(0) + df_main['신규방문_재구매_건수'].fillna(0) + df_main['재방문_신규구매_건수'].fillna(0) + df_main['재방문_재구매_건수'].fillna(0))
     
-    return df_main, df_campaign, df_sub
+    load_info = {
+        'total_rows_loaded': len(df_total),
+        'invalid_date_count': invalid_date_count,
+        'min_date': df_total['날짜'].min(),
+        'max_date': df_total['날짜'].max(),
+    }
+
+    return df_main, df_campaign, df_sub, load_info
 
 # 구글 시트 수정 직후 캐시 때문에 예전 데이터가 보이는 경우를 방지
 if st.sidebar.button("🔄 구글 시트 데이터 새로고침", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
-df_all, df_camp_all, df_sub_all = load_data()
+df_all, df_camp_all, df_sub_all, load_info = load_data()
 
 # 날짜 파싱 상태 진단
 valid_dates = df_all['날짜'].dropna()
@@ -282,6 +323,17 @@ if valid_dates.empty:
 # 사이드바 필터
 # ---------------------------------------------------------
 st.sidebar.header("📊 필터")
+
+with st.sidebar.expander("🩺 데이터 연결 상태", expanded=False):
+    st.write(f"전체 시트 정상 날짜 행: {load_info['total_rows_loaded']:,}행")
+    st.write(f"날짜 파싱 실패: {load_info['invalid_date_count']:,}행")
+    if pd.notnull(load_info['min_date']) and pd.notnull(load_info['max_date']):
+        st.write(
+            "읽힌 날짜 범위: "
+            f"{load_info['min_date'].date()} ~ {load_info['max_date'].date()}"
+        )
+    if load_info['invalid_date_count'] > 0:
+        st.warning("날짜로 변환하지 못한 행이 있습니다. Google Sheet의 날짜 값을 확인해 주세요.")
 brand_options = ["전체", "셀티아이", "셀티아이 인플루언서", "트리어드", "트리어드 인플루언서", "기타"]
 selected_brands = st.sidebar.multiselect("📌 브랜드 선택", brand_options, default=["전체"])
 
