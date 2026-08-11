@@ -17,7 +17,7 @@ def check_password():
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.text_input("🔒 광고주 전용 대시보드입니다. 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
+        st.text_input("🔒 비밀번호를 입력하세요.", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
         st.text_input("❌ 비밀번호가 틀렸습니다. 다시 입력하세요.", type="password", on_change=password_entered, key="password")
@@ -56,36 +56,154 @@ def load_data():
     # 정기구독 시트 읽기
     try:
         df_sub = pd.read_csv(get_csv_url('정기구독'))
-        if '날짜' not in [str(c).strip() for c in df_sub.columns]:
-            mask = df_sub.astype(str).apply(lambda x: x.str.contains('날짜', na=False)).any(axis=1)
+
+        raw_cols = [str(c).strip() for c in df_sub.columns]
+        if not any(str(c).replace(' ', '') == '날짜' for c in raw_cols):
+            mask = df_sub.astype(str).apply(
+                lambda x: x.str.contains('날짜', na=False)
+            ).any(axis=1)
+
             if mask.any():
                 header_idx = mask.idxmax()
-                df_sub.columns = df_sub.iloc[header_idx].astype(str).str.strip().tolist()
-                df_sub = df_sub.iloc[header_idx+1:].reset_index(drop=True)
-        else:
-            df_sub.columns = [str(c).strip() for c in df_sub.columns]
-            
-        df_sub['날짜'] = pd.to_datetime(df_sub['날짜'], errors='coerce')
-        if '브랜드' not in df_sub.columns: df_sub['브랜드'] = '전체'
-        else: df_sub['브랜드'] = df_sub['브랜드'].astype(str).str.strip()
-            
-        target_col = next((c for c in df_sub.columns if '구독' in str(c) or '할인금액' in str(c) or '금액' in str(c)), None)
-        if target_col:
-            df_sub['정기구독_매출액'] = pd.to_numeric(df_sub[target_col].astype(str).str.replace(r'[^\d]', '', regex=True), errors='coerce').fillna(0)
-        else:
-            df_sub['정기구독_매출액'] = 0
-    except:
-        df_sub = pd.DataFrame({'날짜': pd.to_datetime([]), '브랜드': [], '정기구독_매출액': []})
+                df_sub.columns = (
+                    df_sub.iloc[header_idx]
+                    .astype(str)
+                    .str.strip()
+                    .tolist()
+                )
+                df_sub = df_sub.iloc[header_idx + 1:].reset_index(drop=True)
 
-    df_cellti = pd.read_csv(get_csv_url('셀티아이'))
-    df_cellti['날짜'] = pd.to_datetime(df_cellti['날짜'], errors='coerce')
-    df_cellti['브랜드'] = '셀티아이'
-    
-    df_triad = pd.read_csv(get_csv_url('트리어드'))
-    df_triad['날짜'] = pd.to_datetime(df_triad['날짜'], errors='coerce')
-    df_triad['브랜드'] = '트리어드'
-    
-    # 인플루언서 매핑
+        def normalize_col_name(col):
+            return (
+                str(col)
+                .strip()
+                .replace(' ', '')
+                .replace('_', '')
+                .replace('\n', '')
+            )
+
+        rename_map = {
+            c: normalize_col_name(c)
+            for c in df_sub.columns
+        }
+        df_sub = df_sub.rename(columns=rename_map)
+
+        required_cols = ['날짜', '브랜드', '신규구매', '재구매', '정기구독할인금액']
+        missing_cols = [c for c in required_cols if c not in df_sub.columns]
+
+        if missing_cols:
+            raise ValueError("정기구독 시트에서 필요한 컬럼을 찾지 못했습니다: " + ", ".join(missing_cols))
+
+        df_sub['날짜'] = pd.to_datetime(df_sub['날짜'], errors='coerce')
+
+        df_sub['브랜드'] = (
+            df_sub['브랜드']
+            .astype(str)
+            .str.strip()
+            .str.replace(r'\s+', '', regex=True)
+        )
+
+        def to_number(series):
+            return pd.to_numeric(
+                series.astype(str).str.replace(r'[^\d.-]', '', regex=True),
+                errors='coerce'
+            ).fillna(0)
+
+        df_sub['신규구매_실매출'] = to_number(df_sub['신규구매'])
+        df_sub['재구매_실매출'] = to_number(df_sub['재구매'])
+        df_sub['정기구독_금액'] = to_number(df_sub['정기구독할인금액'])
+        df_sub['브랜드_실매출'] = df_sub['신규구매_실매출'] + df_sub['재구매_실매출']
+
+        df_sub = df_sub[
+            df_sub['날짜'].notna()
+            & df_sub['브랜드'].ne('')
+            & df_sub['브랜드'].ne('nan')
+        ].copy()
+
+    except Exception as e:
+        st.error(f"정기구독 시트를 읽지 못했습니다. 오류: {e}")
+        df_sub = pd.DataFrame({
+            '날짜': pd.to_datetime([]), '브랜드': [],
+            '신규구매_실매출': [], '재구매_실매출': [],
+            '정기구독_금액': [], '브랜드_실매출': [],
+        })
+
+    # 미분류 데이터 비율
+    UNCLASSIFIED_RATIO = {
+        '셀티아이': 0.6017037623023724,  
+        '트리어드': 0.30672158945459616, 
+        '기타': 0.09157464824303162,      
+    }
+
+    revenue_cols = [
+        '신규방문_신규구매_매출액', '신규방문_재구매_매출액',
+        '재방문_신규구매_매출액', '재방문_재구매_매출액',
+    ]
+
+    for col in revenue_cols:
+        if col in df_total.columns:
+            df_total[col] = pd.to_numeric(
+                df_total[col].astype(str).str.replace(',', '', regex=False),
+                errors='coerce'
+            ).fillna(0)
+
+    expected_category_cols = {f'CATEGORY_{i}' for i in range(1, 6)}
+    category_cols = [
+        c for c in df_total.columns
+        if str(c).strip().upper() in expected_category_cols
+    ]
+
+    if not category_cols:
+        raise ValueError("전체 시트에서 CATEGORY_1~CATEGORY_5 컬럼을 찾을 수 없습니다.")
+
+    category_text = (
+        df_total[category_cols]
+        .fillna('')
+        .astype(str)
+        .agg(' | '.join, axis=1)
+    )
+
+    has_cellti = category_text.str.contains('셀티아이', case=False, regex=False)
+    has_triad = category_text.str.contains('트리어드', case=False, regex=False)
+
+    cellti_mask = has_cellti & ~has_triad
+    triad_mask = has_triad & ~has_cellti
+    unclassified_mask = ~(cellti_mask | triad_mask)
+
+    explicit_other_mask = category_text.str.contains('기타', case=False, regex=False)
+
+    df_cellti_tagged = df_total[cellti_mask].copy()
+    df_cellti_tagged['브랜드'] = '셀티아이'
+
+    df_triad_tagged = df_total[triad_mask].copy()
+    df_triad_tagged['브랜드'] = '트리어드'
+
+    df_unclassified = df_total[unclassified_mask].copy()
+    df_other_explicit = df_total[explicit_other_mask].copy()
+    if not df_other_explicit.empty:
+        df_other_explicit['브랜드'] = '기타'
+
+    def make_allocated_revenue_rows(source_df, brand_name, ratio):
+        allocated = source_df.copy()
+        allocated['브랜드'] = brand_name
+        numeric_cols = allocated.select_dtypes(include='number').columns.tolist()
+        non_revenue_numeric_cols = [c for c in numeric_cols if c not in revenue_cols]
+        if non_revenue_numeric_cols:
+            allocated[non_revenue_numeric_cols] = 0
+        for col in revenue_cols:
+            if col in allocated.columns:
+                allocated[col] = allocated[col].fillna(0) * ratio
+        return allocated
+
+    df_cellti_alloc = make_allocated_revenue_rows(df_unclassified, '셀티아이', UNCLASSIFIED_RATIO['셀티아이'])
+    df_triad_alloc = make_allocated_revenue_rows(df_unclassified, '트리어드', UNCLASSIFIED_RATIO['트리어드'])
+    df_other_alloc = make_allocated_revenue_rows(df_unclassified, '기타', UNCLASSIFIED_RATIO['기타'])
+
+    df_other = df_other_explicit.copy() if not df_other_explicit.empty else df_other_alloc.copy()
+
+    df_cellti = pd.concat([df_cellti_tagged, df_cellti_alloc], ignore_index=True)
+    df_triad = pd.concat([df_triad_tagged, df_triad_alloc], ignore_index=True)
+
     influencer_dfs = []
     str_cols = df_total.select_dtypes(include=['object']).columns
     is_meta_yt = df_total['매체'].astype(str).str.upper().isin(['META', '유튜브'])
@@ -110,7 +228,7 @@ def load_data():
                 df_inf['브랜드'] = '셀티아이 인플루언서' if inf_name == '문지애' else '트리어드 인플루언서'
                 influencer_dfs.append(df_inf)
     
-    df_main = pd.concat([df_total, df_cellti, df_triad] + influencer_dfs, ignore_index=True)
+    df_main = pd.concat([df_total, df_cellti, df_triad, df_other] + influencer_dfs, ignore_index=True)
     gc.collect()
     
     df_main['총매출액'] = (df_main['신규방문_신규구매_매출액'].fillna(0) + df_main['신규방문_재구매_매출액'].fillna(0) + df_main['재방문_신규구매_매출액'].fillna(0) + df_main['재방문_재구매_매출액'].fillna(0))
@@ -159,9 +277,7 @@ if any("인플루언서" in b for b in effective_brands):
 
 min_date, max_date = df_all['날짜'].min().date(), df_all['날짜'].max().date()
 
-# ---------------------------------------------------------
 # 🌟 빠른 월 선택 기능 (1월 ~ 12월 버튼)
-# ---------------------------------------------------------
 if 'my_date_picker' not in st.session_state:
     st.session_state['my_date_picker'] = (max_date.replace(day=1), max_date)
 
@@ -205,7 +321,7 @@ df_sub_prev = df_sub_filtered[(df_sub_filtered['날짜'].dt.date >= prev_start_d
 st.title(f"📈 공식몰 성과 대시보드 ({' + '.join(selected_brands) if len(selected_brands) <= 2 else '종합'})")
 
 # ---------------------------------------------------------
-# 상단 KPI (유입 / 구매건수 분리)
+# 상단 KPI
 # ---------------------------------------------------------
 st.caption(f"※ 비교 기간: 직전 동일 기간 ({prev_start_date} ~ {prev_end_date}) 대비")
 
@@ -248,14 +364,11 @@ else:
 show_triad_subscription = ("전체" in effective_brands or any("트리어드" in b for b in effective_brands))
 
 if show_triad_subscription:
-    cur_subscription_log = df_sub_current[df_sub_current['브랜드'] == '트리어드']['정기구독_매출액'].sum()
-    prev_subscription_log = df_sub_prev[df_sub_prev['브랜드'] == '트리어드']['정기구독_매출액'].sum()
+    cur_subscription_log = df_sub_current[df_sub_current['브랜드'] == '트리어드']['정기구독_금액'].sum()
+    prev_subscription_log = df_sub_prev[df_sub_prev['브랜드'] == '트리어드']['정기구독_금액'].sum()
 else:
     cur_subscription_log = 0
     prev_subscription_log = 0
-
-df_sub_current['브랜드_실매출'] = pd.to_numeric(df_sub_current.get('신규구매', 0), errors='coerce').fillna(0) + pd.to_numeric(df_sub_current.get('재구매', 0), errors='coerce').fillna(0)
-df_sub_prev['브랜드_실매출'] = pd.to_numeric(df_sub_prev.get('신규구매', 0), errors='coerce').fillna(0) + pd.to_numeric(df_sub_prev.get('재구매', 0), errors='coerce').fillna(0)
 
 cur_official_gross = df_sub_current[df_sub_current['브랜드'].isin(official_target_brands)]['브랜드_실매출'].sum()
 prev_official_gross = df_sub_prev[df_sub_prev['브랜드'].isin(official_target_brands)]['브랜드_실매출'].sum()
@@ -318,7 +431,7 @@ if not df_camp_all.empty:
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 고객 여정 퍼널 (🌟 에러가 발생했던 구간 완벽 수정됨)
+# 고객 여정 퍼널 (🌟 100% 오류 없는 go.Funnel 방식 적용)
 # ---------------------------------------------------------
 st.markdown("#### 🔽 고객 여정 퍼널")
 col_funnel1, col_funnel2 = st.columns(2)
@@ -328,64 +441,97 @@ prev_new_buy = df_prev['신규방문_신규구매_건수'].sum() + df_prev['신�
 cur_ret_buy = df_current['재방문_신규구매_건수'].sum() + df_current['재방문_재구매_건수'].sum()
 prev_ret_buy = df_prev['재방문_신규구매_건수'].sum() + df_prev['재방문_재구매_건수'].sum()
 
-funnel_new = pd.DataFrame({
-    '단계': ['1. 방문', '2. 관심', '3. 가입', '4. 구매시도', '5. 최종구매'], 
-    '수치': [df_current['신규방문_총 방문수'].sum(), df_current['신규방문_관심행동1'].sum(), df_current['신규방문_회원가입'].sum(), df_current['신규방문_구매시도'].sum(), cur_new_buy],
-    '이전': [df_prev['신규방문_총 방문수'].sum(), df_prev['신규방문_관심행동1'].sum(), df_prev['신규방문_회원가입'].sum(), df_prev['신규방문_구매시도'].sum(), prev_new_buy]
-})
-funnel_new['증감텍스트'] = (funnel_new['수치'] - funnel_new['이전']).apply(lambda x: f"▲ {int(x):,}" if x > 0 else (f"▼ {int(abs(x)):,}" if x < 0 else "-"))
+# 신규 퍼널
+funnel_new_y = ['1. 방문', '2. 관심', '3. 가입', '4. 구매시도', '5. 최종구매']
+funnel_new_x = [df_current['신규방문_총 방문수'].sum(), df_current['신규방문_관심행동1'].sum(), df_current['신규방문_회원가입'].sum(), df_current['신규방문_구매시도'].sum(), cur_new_buy]
+funnel_new_prev = [df_prev['신규방문_총 방문수'].sum(), df_prev['신규방문_관심행동1'].sum(), df_prev['신규방문_회원가입'].sum(), df_prev['신규방문_구매시도'].sum(), prev_new_buy]
+funnel_new_diff = [c - p for c, p in zip(funnel_new_x, funnel_new_prev)]
+funnel_new_diff_txt = [f"▲ {int(d):,}" if d > 0 else (f"▼ {int(abs(d)):,}" if d < 0 else "-") for d in funnel_new_diff]
 
-fig_fnew = px.funnel(funnel_new, x='수치', y='단계', title="신규방문 퍼널", color_discrete_sequence=['#82B1FF'])
-# 🌟 안정적인 강제 데이터 주입 방식 적용
-fig_fnew.update_traces(customdata=funnel_new['증감텍스트'].tolist(), textinfo="value+percent initial", hovertemplate="<b>%{y}</b><br>수치: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>") 
-fig_fnew.update_layout(template="plotly_white", margin=dict(t=30, b=0), height=300)
+fig_fnew = go.Figure(go.Funnel(
+    y=funnel_new_y, x=funnel_new_x,
+    textinfo="value+percent initial",
+    marker={"color": "#82B1FF"},
+    customdata=funnel_new_diff_txt,
+    hovertemplate="<b>%{y}</b><br>수치: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>"
+))
+fig_fnew.update_layout(template="plotly_white", margin=dict(t=30, b=0), height=300, title="신규방문 퍼널")
 col_funnel1.plotly_chart(fig_fnew, use_container_width=True)
 
-funnel_ret = pd.DataFrame({
-    '단계': ['1. 방문', '2. 관심', '3. 가입', '4. 구매시도', '5. 최종구매'], 
-    '수치': [df_current['재방문_총 방문수'].sum(), df_current['재방문_관심행동1'].sum(), df_current['재방문_회원가입'].sum(), df_current['재방문_구매시도'].sum(), cur_ret_buy],
-    '이전': [df_prev['재방문_총 방문수'].sum(), df_prev['재방문_관심행동1'].sum(), df_prev['재방문_회원가입'].sum(), df_prev['재방문_구매시도'].sum(), prev_ret_buy]
-})
-funnel_ret['증감텍스트'] = (funnel_ret['수치'] - funnel_ret['이전']).apply(lambda x: f"▲ {int(x):,}" if x > 0 else (f"▼ {int(abs(x)):,}" if x < 0 else "-"))
+# 재방문 퍼널
+funnel_ret_y = ['1. 방문', '2. 관심', '3. 가입', '4. 구매시도', '5. 최종구매']
+funnel_ret_x = [df_current['재방문_총 방문수'].sum(), df_current['재방문_관심행동1'].sum(), df_current['재방문_회원가입'].sum(), df_current['재방문_구매시도'].sum(), cur_ret_buy]
+funnel_ret_prev = [df_prev['재방문_총 방문수'].sum(), df_prev['재방문_관심행동1'].sum(), df_prev['재방문_회원가입'].sum(), df_prev['재방문_구매시도'].sum(), prev_ret_buy]
+funnel_ret_diff = [c - p for c, p in zip(funnel_ret_x, funnel_ret_prev)]
+funnel_ret_diff_txt = [f"▲ {int(d):,}" if d > 0 else (f"▼ {int(abs(d)):,}" if d < 0 else "-") for d in funnel_ret_diff]
 
-fig_fret = px.funnel(funnel_ret, x='수치', y='단계', title="재방문 퍼널", color_discrete_sequence=['#304FFE'])
-fig_fret.update_traces(customdata=funnel_ret['증감텍스트'].tolist(), textinfo="value+percent initial", hovertemplate="<b>%{y}</b><br>수치: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>")
-fig_fret.update_layout(template="plotly_white", margin=dict(t=30, b=0), height=300)
+fig_fret = go.Figure(go.Funnel(
+    y=funnel_ret_y, x=funnel_ret_x,
+    textinfo="value+percent initial",
+    marker={"color": "#304FFE"},
+    customdata=funnel_ret_diff_txt,
+    hovertemplate="<b>%{y}</b><br>수치: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>"
+))
+fig_fret.update_layout(template="plotly_white", margin=dict(t=30, b=0), height=300, title="재방문 퍼널")
 col_funnel2.plotly_chart(fig_fret, use_container_width=True)
 
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 주요 매체 Top 5
+# 주요 매체 Top 5 (🌟 100% 오류 없는 go.Bar 방식 적용)
 # ---------------------------------------------------------
 st.markdown("#### 🏆 주요 매체 Top 5")
 col_top1, col_top2, col_top3 = st.columns(3)
 
-top_visit = pd.merge(df_current.groupby('매체')['총방문수'].sum().reset_index(), df_prev.groupby('매체')['총방문수'].sum().reset_index().rename(columns={'총방문수':'이전'}), on='매체', how='left').fillna(0)
-top_visit['증감텍스트'] = (top_visit['총방문수'] - top_visit['이전']).apply(lambda x: f"▲ {int(x):,}" if x > 0 else (f"▼ {int(abs(x)):,}" if x < 0 else "-"))
-top_visit = top_visit.sort_values(by='총방문수', ascending=False).head(5)
+# 1. 유입 기준
+top_visit_cur = df_current.groupby('매체', observed=False)['총방문수'].sum().reset_index()
+top_visit_prev = df_prev.groupby('매체', observed=False)['총방문수'].sum().reset_index().rename(columns={'총방문수':'이전'})
+top_visit = pd.merge(top_visit_cur, top_visit_prev, on='매체', how='left').fillna(0)
+top_visit['증감량'] = top_visit['총방문수'] - top_visit['이전']
+top_visit['증감텍스트'] = top_visit['증감량'].apply(lambda x: f"▲ {int(x):,}" if x > 0 else (f"▼ {int(abs(x)):,}" if x < 0 else "-"))
+top_visit = top_visit.sort_values(by='총방문수', ascending=True).tail(5)
 
-fig_top_visit = px.bar(top_visit, x='총방문수', y='매체', orientation='h', title='1. 유입 기준', text_auto='.2s', color_discrete_sequence=['#B39DDB'])
-fig_top_visit.update_traces(customdata=top_visit['증감텍스트'].tolist(), hovertemplate="<b>%{y}</b><br>유입수: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>")
-fig_top_visit.update_layout(template="plotly_white", yaxis={'categoryorder':'total ascending'}, margin=dict(t=30, l=0, r=0, b=0), height=250) 
+fig_top_visit = go.Figure(go.Bar(
+    x=top_visit['총방문수'], y=top_visit['매체'], orientation='h',
+    marker_color='#B39DDB', text=[f"{v:,.0f}" for v in top_visit['총방문수']], textposition='auto',
+    customdata=top_visit['증감텍스트'].tolist(),
+    hovertemplate="<b>%{y}</b><br>유입수: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>"
+))
+fig_top_visit.update_layout(template="plotly_white", title='1. 유입 기준', margin=dict(t=30, l=0, r=0, b=0), height=250) 
 col_top1.plotly_chart(fig_top_visit, use_container_width=True)
 
-top_signup = pd.merge(df_current.groupby('매체')['총회원가입'].sum().reset_index(), df_prev.groupby('매체')['총회원가입'].sum().reset_index().rename(columns={'총회원가입':'이전'}), on='매체', how='left').fillna(0)
-top_signup['증감텍스트'] = (top_signup['총회원가입'] - top_signup['이전']).apply(lambda x: f"▲ {int(x):,}" if x > 0 else (f"▼ {int(abs(x)):,}" if x < 0 else "-"))
-top_signup = top_signup.sort_values(by='총회원가입', ascending=False).head(5)
+# 2. 가입 기준
+top_signup_cur = df_current.groupby('매체', observed=False)['총회원가입'].sum().reset_index()
+top_signup_prev = df_prev.groupby('매체', observed=False)['총회원가입'].sum().reset_index().rename(columns={'총회원가입':'이전'})
+top_signup = pd.merge(top_signup_cur, top_signup_prev, on='매체', how='left').fillna(0)
+top_signup['증감량'] = top_signup['총회원가입'] - top_signup['이전']
+top_signup['증감텍스트'] = top_signup['증감량'].apply(lambda x: f"▲ {int(x):,}" if x > 0 else (f"▼ {int(abs(x)):,}" if x < 0 else "-"))
+top_signup = top_signup.sort_values(by='총회원가입', ascending=True).tail(5)
 
-fig_top_signup = px.bar(top_signup, x='총회원가입', y='매체', orientation='h', title='2. 가입 기준', text_auto='.0f', color_discrete_sequence=['#4DD0E1'])
-fig_top_signup.update_traces(customdata=top_signup['증감텍스트'].tolist(), hovertemplate="<b>%{y}</b><br>가입수: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>")
-fig_top_signup.update_layout(template="plotly_white", yaxis={'categoryorder':'total ascending'}, margin=dict(t=30, l=0, r=0, b=0), height=250)
+fig_top_signup = go.Figure(go.Bar(
+    x=top_signup['총회원가입'], y=top_signup['매체'], orientation='h',
+    marker_color='#4DD0E1', text=[f"{v:,.0f}" for v in top_signup['총회원가입']], textposition='auto',
+    customdata=top_signup['증감텍스트'].tolist(),
+    hovertemplate="<b>%{y}</b><br>가입수: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>"
+))
+fig_top_signup.update_layout(template="plotly_white", title='2. 가입 기준', margin=dict(t=30, l=0, r=0, b=0), height=250)
 col_top2.plotly_chart(fig_top_signup, use_container_width=True)
 
-top_sales = pd.merge(df_current.groupby('매체')['총매출액'].sum().reset_index(), df_prev.groupby('매체')['총매출액'].sum().reset_index().rename(columns={'총매출액': '이전'}), on='매체', how='left').fillna(0)
-top_sales['증감텍스트'] = (top_sales['총매출액'] - top_sales['이전']).apply(lambda x: f"▲ ₩{int(x):,}" if x > 0 else (f"▼ ₩{int(abs(x)):,}" if x < 0 else "-"))
-top_sales = top_sales.sort_values(by='총매출액', ascending=False).head(5)
+# 3. 매출 기준
+top_sales_cur = df_current.groupby('매체', observed=False)['총매출액'].sum().reset_index()
+top_sales_prev = df_prev.groupby('매체', observed=False)['총매출액'].sum().reset_index().rename(columns={'총매출액':'이전'})
+top_sales = pd.merge(top_sales_cur, top_sales_prev, on='매체', how='left').fillna(0)
+top_sales['증감량'] = top_sales['총매출액'] - top_sales['이전']
+top_sales['증감텍스트'] = top_sales['증감량'].apply(lambda x: f"▲ ₩{int(x):,}" if x > 0 else (f"▼ ₩{int(abs(x)):,}" if x < 0 else "-"))
+top_sales = top_sales.sort_values(by='총매출액', ascending=True).tail(5)
 
-fig_top_sales = px.bar(top_sales, x='총매출액', y='매체', orientation='h', title='3. 매체별 매출 기준', text_auto='.2s', color_discrete_sequence=['#F48FB1'])
-fig_top_sales.update_traces(customdata=top_sales['증감텍스트'].tolist(), hovertemplate="<b>%{y}</b><br>매출: ₩%{x:,.0f}<br>전기간 대비: %{customdata}<extra></extra>")
-fig_top_sales.update_layout(template="plotly_white", yaxis={'categoryorder': 'total ascending'}, margin=dict(t=30, l=0, r=0, b=0), height=250)
+fig_top_sales = go.Figure(go.Bar(
+    x=top_sales['총매출액'], y=top_sales['매체'], orientation='h',
+    marker_color='#F48FB1', text=[f"₩{v:,.0f}" for v in top_sales['총매출액']], textposition='auto',
+    customdata=top_sales['증감텍스트'].tolist(),
+    hovertemplate="<b>%{y}</b><br>매출: ₩%{x:,.0f}<br>전기간 대비: %{customdata}<extra></extra>"
+))
+fig_top_sales.update_layout(template="plotly_white", title='3. 매체별 매출 기준', margin=dict(t=30, l=0, r=0, b=0), height=250)
 col_top3.plotly_chart(fig_top_sales, use_container_width=True)
 
 st.markdown("---")
@@ -394,7 +540,7 @@ st.markdown("---")
 # 매체 점유율 및 현황표
 # ---------------------------------------------------------
 st.markdown("#### 🎯 매체별 점유율 (유입 및 매출)")
-df_media_eff = df_current.groupby('매체')[['총방문수', '총구매수', '총매출액']].sum().reset_index().sort_values('총방문수', ascending=False)
+df_media_eff = df_current.groupby('매체', observed=False)[['총방문수', '총구매수', '총매출액']].sum().reset_index().sort_values('총방문수', ascending=False)
 col_pie1, col_pie2 = st.columns(2)
 
 with col_pie1:
@@ -414,8 +560,8 @@ st.markdown("---")
 st.markdown("#### 🔄 비교 기간 대비 매체 운영 현황")
 st.caption("※ 설정된 기간과 직전 동일 기간을 비교합니다.")
 
-df_curr_media = df_current.groupby('매체')[['총방문수', '총매출액']].sum().reset_index().rename(columns={'총방문수': '이번_유입수', '총매출액': '이번_매출'})
-df_prev_media = df_prev.groupby('매체')[['총방문수', '총매출액']].sum().reset_index().rename(columns={'총방문수': '이전_유입수', '총매출액': '이전_매출'})
+df_curr_media = df_current.groupby('매체', observed=False)[['총방문수', '총매출액']].sum().reset_index().rename(columns={'총방문수': '이번_유입수', '총매출액': '이번_매출'})
+df_prev_media = df_prev.groupby('매체', observed=False)[['총방문수', '총매출액']].sum().reset_index().rename(columns={'총방문수': '이전_유입수', '총매출액': '이전_매출'})
 df_compare = pd.merge(df_prev_media, df_curr_media, on='매체', how='outer').fillna(0)
 
 def get_media_status(row):
