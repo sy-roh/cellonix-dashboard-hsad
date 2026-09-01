@@ -74,41 +74,44 @@ def parse_date_series(series):
 # ---------------------------------------------------------
 @st.cache_data(ttl=600, max_entries=1)
 def load_data():
+    # -----------------------------------------------------
+    # Google Sheet 데이터 소스
+    # -----------------------------------------------------
+    # 기존 gsheet_url에 연결된 "셀로닉스 통합데이터"의 실제 탭 GID 기준
+    # 25년 하반기 / 26년 상반기 / 26년 하반기를 모두 합쳐 하나의 df_total로 사용합니다.
+    #
+    # 탭 구성
+    # - 25년 하반기   : gid 875817815
+    # - 26년 상반기   : gid 490015133
+    # - 26년 하반기   : gid 1268027742
+    # - 캠페인 일정표 : gid 1191457819
+    #
+    # 첨부된 통합데이터에는 '정기구독' 별도 탭이 없으므로
+    # 정기구독/공식몰 실매출 KPI는 별도 데이터가 없을 때 '데이터 없음'으로 표시합니다.
+    # 기존 Streamlit/GitHub 설정에 등록해 둔 구글시트 링크를 그대로 사용합니다.
+    # secrets 예시:
+    # gsheet_url = "https://docs.google.com/spreadsheets/d/...../edit..."
     raw_url = st.secrets["gsheet_url"]
-    sheet_id = raw_url.split("/d/")[1].split("/")[0]
 
-    # -----------------------------------------------------
-    # Google Sheet CSV 로드
-    # -----------------------------------------------------
-    # 핵심 변경점:
-    # 1) 로그 원천 데이터를 25년 하반기 / 26년 상반기 / 26년 하반기에서 각각 읽음
-    # 2) 읽은 즉시 하나의 df_total로 합침
-    # 3) 이후 대시보드 로직은 원본 시트 구분 없이 날짜(연도/월)만 사용
-    #
-    # gviz/tq는 날짜 컬럼에 DATE/STRING 타입이 섞여 있을 때 일부 값이 누락될 수 있어
-    # 기존과 동일하게 일반 CSV export + gid 방식을 유지합니다.
-    #
-    # 아래 3개 GID는 .streamlit/secrets.toml에 추가해 주세요.
-    # gid는 각 탭을 열었을 때 URL 끝의 #gid=숫자 값입니다.
-    #   gid_25_h2 = 123456789
-    #   gid_26_h1 = 234567890
-    #   gid_26_h2 = 345678901
     try:
-        data_sheet_gids = {
-            "25년 하반기": int(st.secrets["gid_25_h2"]),
-            "26년 상반기": int(st.secrets["gid_26_h1"]),
-            "26년 하반기": int(st.secrets["gid_26_h2"]),
-        }
+        sheet_id = raw_url.split("/d/")[1].split("/")[0]
     except Exception as e:
         raise ValueError(
-            "st.secrets에 gid_25_h2, gid_26_h1, gid_26_h2를 등록해 주세요. "
-            "각 값은 해당 구글시트 탭 URL의 #gid= 뒤 숫자입니다."
+            "st.secrets['gsheet_url']에서 Google Sheet ID를 읽지 못했습니다. "
+            "등록된 링크가 일반 Google Sheets URL인지 확인해 주세요."
         ) from e
 
     SHEET_GIDS = {
-        **data_sheet_gids,
-        "캠페인": 1752209461,
-        "정기구독": 1078181767,
+        "25년 하반기": 875817815,
+        "26년 상반기": 490015133,
+        "26년 하반기": 1268027742,
+        "캠페인 일정표": 1191457819,
+    }
+
+    data_sheet_gids = {
+        "25년 하반기": SHEET_GIDS["25년 하반기"],
+        "26년 상반기": SHEET_GIDS["26년 상반기"],
+        "26년 하반기": SHEET_GIDS["26년 하반기"],
     }
 
     def get_csv_url(sheet_name):
@@ -196,7 +199,7 @@ def load_data():
             df_total[col] = to_number(df_total[col])
 
     # 캠페인 일정표
-    df_campaign = read_sheet_csv("캠페인")
+    df_campaign = read_sheet_csv("캠페인 일정표")
     df_campaign.columns = [str(c).strip() for c in df_campaign.columns]
     df_campaign["시작일"] = parse_date_series(df_campaign["시작일"])
     df_campaign["종료일"] = parse_date_series(df_campaign["종료일"])
@@ -205,82 +208,21 @@ def load_data():
     ] += pd.Timedelta(days=1)
 
     # -----------------------------------------------------
-    # 정기구독 시트 읽기
+    # 정기구독 / 공식몰 실매출 데이터
     # -----------------------------------------------------
-    try:
-        df_sub = read_sheet_csv("정기구독")
-
-        raw_cols = [str(c).strip() for c in df_sub.columns]
-        if not any(str(c).replace(" ", "") == "날짜" for c in raw_cols):
-            mask = df_sub.astype(str).apply(
-                lambda x: x.str.contains("날짜", na=False)
-            ).any(axis=1)
-
-            if mask.any():
-                header_idx = mask.idxmax()
-                df_sub.columns = (
-                    df_sub.iloc[header_idx]
-                    .astype(str)
-                    .str.strip()
-                    .tolist()
-                )
-                df_sub = df_sub.iloc[header_idx + 1 :].reset_index(drop=True)
-
-        def normalize_col_name(col):
-            return (
-                str(col)
-                .strip()
-                .replace(" ", "")
-                .replace("_", "")
-                .replace("\n", "")
-            )
-
-        rename_map = {c: normalize_col_name(c) for c in df_sub.columns}
-        df_sub = df_sub.rename(columns=rename_map)
-
-        required_cols = ["날짜", "브랜드", "신규구매", "재구매", "정기구독할인금액"]
-        missing_cols = [c for c in required_cols if c not in df_sub.columns]
-
-        if missing_cols:
-            raise ValueError(
-                "정기구독 시트에서 필요한 컬럼을 찾지 못했습니다: "
-                + ", ".join(missing_cols)
-            )
-
-        df_sub["날짜"] = parse_date_series(df_sub["날짜"])
-
-        df_sub["브랜드"] = (
-            df_sub["브랜드"]
-            .astype(str)
-            .str.strip()
-            .str.replace(r"\s+", "", regex=True)
-        )
-
-        df_sub["신규구매_실매출"] = to_number(df_sub["신규구매"])
-        df_sub["재구매_실매출"] = to_number(df_sub["재구매"])
-        df_sub["정기구독_금액"] = to_number(df_sub["정기구독할인금액"])
-        df_sub["브랜드_실매출"] = (
-            df_sub["신규구매_실매출"] + df_sub["재구매_실매출"]
-        )
-
-        df_sub = df_sub[
-            df_sub["날짜"].notna()
-            & df_sub["브랜드"].ne("")
-            & df_sub["브랜드"].ne("nan")
-        ].copy()
-
-    except Exception as e:
-        st.error(f"정기구독 시트를 읽지 못했습니다. 오류: {e}")
-        df_sub = pd.DataFrame(
-            {
-                "날짜": pd.to_datetime([]),
-                "브랜드": [],
-                "신규구매_실매출": [],
-                "재구매_실매출": [],
-                "정기구독_금액": [],
-                "브랜드_실매출": [],
-            }
-        )
+    # 현재 "셀로닉스 통합데이터"에는 정기구독 별도 탭이 없습니다.
+    # 기존 대시보드의 지표 정의를 임의로 로그 매출로 대체하지 않고,
+    # 데이터가 없는 상태를 명확하게 표시하기 위해 빈 DataFrame으로 둡니다.
+    df_sub = pd.DataFrame(
+        {
+            "날짜": pd.to_datetime([]),
+            "브랜드": pd.Series(dtype="string"),
+            "신규구매_실매출": pd.Series(dtype="float64"),
+            "재구매_실매출": pd.Series(dtype="float64"),
+            "정기구독_금액": pd.Series(dtype="float64"),
+            "브랜드_실매출": pd.Series(dtype="float64"),
+        }
+    )
 
     # 미분류 데이터 비율
     UNCLASSIFIED_RATIO = {
@@ -682,51 +624,75 @@ else:
         if "트리어드" in b and "트리어드" not in official_target_brands:
             official_target_brands.append("트리어드")
 
-show_triad_subscription = (
-    "전체" in effective_brands or any("트리어드" in b for b in effective_brands)
-)
+has_official_sales_data = not df_sub_all.empty
 
-if show_triad_subscription:
-    cur_subscription_log = df_sub_current[
-        df_sub_current["브랜드"] == "트리어드"
-    ]["정기구독_금액"].sum()
-    prev_subscription_log = df_sub_prev[
-        df_sub_prev["브랜드"] == "트리어드"
-    ]["정기구독_금액"].sum()
+if has_official_sales_data:
+    show_triad_subscription = (
+        "전체" in effective_brands
+        or any("트리어드" in b for b in effective_brands)
+    )
+
+    if show_triad_subscription:
+        cur_subscription_log = df_sub_current[
+            df_sub_current["브랜드"] == "트리어드"
+        ]["정기구독_금액"].sum()
+        prev_subscription_log = df_sub_prev[
+            df_sub_prev["브랜드"] == "트리어드"
+        ]["정기구독_금액"].sum()
+    else:
+        cur_subscription_log = 0
+        prev_subscription_log = 0
+
+    cur_official_gross = df_sub_current[
+        df_sub_current["브랜드"].isin(official_target_brands)
+    ]["브랜드_실매출"].sum()
+    prev_official_gross = df_sub_prev[
+        df_sub_prev["브랜드"].isin(official_target_brands)
+    ]["브랜드_실매출"].sum()
+
+    cur_official_actual = cur_official_gross - cur_subscription_log
+    prev_official_actual = prev_official_gross - prev_subscription_log
 else:
-    cur_subscription_log = 0
-    prev_subscription_log = 0
-
-cur_official_gross = df_sub_current[
-    df_sub_current["브랜드"].isin(official_target_brands)
-]["브랜드_실매출"].sum()
-prev_official_gross = df_sub_prev[
-    df_sub_prev["브랜드"].isin(official_target_brands)
-]["브랜드_실매출"].sum()
-
-cur_official_actual = cur_official_gross - cur_subscription_log
-prev_official_actual = prev_official_gross - prev_subscription_log
+    cur_subscription_log = None
+    prev_subscription_log = None
+    cur_official_actual = None
+    prev_official_actual = None
 
 st.markdown("#### 💰 매출 요약")
-st.caption(
-    "※ 공식몰 실매출은 정기구독 시트의 셀티아이·트리어드 '신규 구매 + 재 구매'에서 "
-    "트리어드 '정기구독 할인금액'을 제외한 순매출입니다. "
-    "로그 매출 합계는 통합 로그 데이터의 신규 매출 + 재방문 매출이며, "
-    "정기구독은 트리어드의 '정기구독 할인금액'입니다."
+
+if has_official_sales_data:
+    st.caption(
+        "※ 공식몰 실매출은 정기구독 데이터의 셀티아이·트리어드 "
+        "'신규 구매 + 재 구매'에서 트리어드 '정기구독 할인금액'을 제외한 순매출입니다. "
+        "로그 매출 합계는 기간별 로그 시트의 로그 신규 매출 + 로그 재방문 매출입니다."
+    )
+else:
+    st.caption(
+        "※ 현재 연결된 '셀로닉스 통합데이터'에는 정기구독/공식몰 실매출 별도 탭이 없습니다. "
+        "따라서 공식몰 실매출·정기구독은 '데이터 없음'으로 표시하고, "
+        "로그 매출 지표는 3개 기간 시트 데이터를 통합해 정상 집계합니다."
+    )
+
+m1, sep1, m2, m3, m4, sep2, m5 = st.columns(
+    [1.25, 0.06, 1.15, 1.15, 1.15, 0.06, 1.15]
 )
 
-m1, sep1, m2, m3, m4, sep2, m5 = st.columns([1.25, 0.06, 1.15, 1.15, 1.15, 0.06, 1.15])
+if has_official_sales_data:
+    m1.metric(
+        "🔥 공식몰 실매출",
+        format_currency(cur_official_actual),
+        delta=calculate_delta(cur_official_actual, prev_official_actual),
+    )
+else:
+    m1.metric("🔥 공식몰 실매출", "데이터 없음")
 
-m1.metric(
-    "🔥 공식몰 실매출",
-    format_currency(cur_official_actual),
-    delta=calculate_delta(cur_official_actual, prev_official_actual),
-)
 with sep1:
     st.markdown(
-        "<div style='border-left:1px solid #D9D9D9;height:92px;margin:6px auto 0 auto;width:1px;'></div>",
+        "<div style='border-left:1px solid #D9D9D9;height:92px;"
+        "margin:6px auto 0 auto;width:1px;'></div>",
         unsafe_allow_html=True,
     )
+
 m2.metric(
     "📊 로그 매출 합계",
     format_currency(cur_log_total_rev),
@@ -742,16 +708,22 @@ m4.metric(
     format_currency(cur_log_return_rev),
     delta=calculate_delta(cur_log_return_rev, prev_log_return_rev),
 )
+
 with sep2:
     st.markdown(
-        "<div style='border-left:1px solid #D9D9D9;height:92px;margin:6px auto 0 auto;width:1px;'></div>",
+        "<div style='border-left:1px solid #D9D9D9;height:92px;"
+        "margin:6px auto 0 auto;width:1px;'></div>",
         unsafe_allow_html=True,
     )
-m5.metric(
-    "🔄 정기구독",
-    format_currency(cur_subscription_log),
-    delta=calculate_delta(cur_subscription_log, prev_subscription_log),
-)
+
+if has_official_sales_data:
+    m5.metric(
+        "🔄 정기구독",
+        format_currency(cur_subscription_log),
+        delta=calculate_delta(cur_subscription_log, prev_subscription_log),
+    )
+else:
+    m5.metric("🔄 정기구독", "데이터 없음")
 
 st.markdown("---")
 
