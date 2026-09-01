@@ -84,10 +84,11 @@ def load_data():
     # - 25년 하반기   : gid 875817815
     # - 26년 상반기   : gid 490015133
     # - 26년 하반기   : gid 1268027742
-    # - 캠페인 일정표 : gid 1191457819
+    # - 캠페인 일정표     : gid 1191457819
+    # - 브랜드별 매출 통계 : gid 1411546295
     #
-    # 첨부된 통합데이터에는 '정기구독' 별도 탭이 없으므로
-    # 정기구독/공식몰 실매출 KPI는 별도 데이터가 없을 때 '데이터 없음'으로 표시합니다.
+    # '브랜드별 매출 통계'의 신규 구매 + 재 구매를 공식몰 매출 원천으로 사용하고,
+    # 정기구독 할인금액을 제외해 공식몰 실매출을 계산합니다.
     # 기존 Streamlit/GitHub 설정에 등록해 둔 구글시트 링크를 그대로 사용합니다.
     # secrets 예시:
     # gsheet_url = "https://docs.google.com/spreadsheets/d/...../edit..."
@@ -106,6 +107,7 @@ def load_data():
         "26년 상반기": 490015133,
         "26년 하반기": 1268027742,
         "캠페인 일정표": 1191457819,
+        "브랜드별 매출 통계": 1411546295,
     }
 
     data_sheet_gids = {
@@ -208,21 +210,85 @@ def load_data():
     ] += pd.Timedelta(days=1)
 
     # -----------------------------------------------------
-    # 정기구독 / 공식몰 실매출 데이터
+    # 브랜드별 매출 통계 → 공식몰 실매출 / 정기구독 데이터
     # -----------------------------------------------------
-    # 현재 "셀로닉스 통합데이터"에는 정기구독 별도 탭이 없습니다.
-    # 기존 대시보드의 지표 정의를 임의로 로그 매출로 대체하지 않고,
-    # 데이터가 없는 상태를 명확하게 표시하기 위해 빈 DataFrame으로 둡니다.
-    df_sub = pd.DataFrame(
-        {
-            "날짜": pd.to_datetime([]),
-            "브랜드": pd.Series(dtype="string"),
-            "신규구매_실매출": pd.Series(dtype="float64"),
-            "재구매_실매출": pd.Series(dtype="float64"),
-            "정기구독_금액": pd.Series(dtype="float64"),
-            "브랜드_실매출": pd.Series(dtype="float64"),
-        }
-    )
+    # 실제 시트 구조:
+    # 1행: 브랜드별_매출통계 (타이틀)
+    # 2행: 날짜 / 요일 / 브랜드 / 신규 구매 / 재 구매 / 정기구독 할인금액
+    #
+    # header=1로 2행을 컬럼명으로 읽습니다.
+    try:
+        df_sub = read_sheet_csv(
+            "브랜드별 매출 통계",
+            header=1,
+            dtype={"날짜": "string"},
+        )
+        df_sub.columns = [str(c).strip() for c in df_sub.columns]
+
+        required_sales_cols = [
+            "날짜",
+            "브랜드",
+            "신규 구매",
+            "재 구매",
+            "정기구독 할인금액",
+        ]
+        missing_sales_cols = [
+            c for c in required_sales_cols if c not in df_sub.columns
+        ]
+
+        if missing_sales_cols:
+            raise ValueError(
+                "브랜드별 매출 통계 시트에서 필요한 컬럼을 찾지 못했습니다: "
+                + ", ".join(missing_sales_cols)
+            )
+
+        df_sub["날짜"] = parse_date_series(df_sub["날짜"])
+
+        df_sub["브랜드"] = (
+            df_sub["브랜드"]
+            .astype("string")
+            .str.strip()
+            .str.replace(r"\s+", "", regex=True)
+        )
+
+        df_sub["신규구매_실매출"] = to_number(df_sub["신규 구매"])
+        df_sub["재구매_실매출"] = to_number(df_sub["재 구매"])
+        df_sub["정기구독_금액"] = to_number(df_sub["정기구독 할인금액"])
+
+        # 신규 구매 + 재 구매 = 할인 차감 전 브랜드 매출
+        df_sub["브랜드_실매출"] = (
+            df_sub["신규구매_실매출"]
+            + df_sub["재구매_실매출"]
+        )
+
+        # 실제 공식몰 실매출 = 브랜드 매출 - 정기구독 할인금액
+        df_sub["공식몰_실매출"] = (
+            df_sub["브랜드_실매출"]
+            - df_sub["정기구독_금액"]
+        )
+
+        df_sub = df_sub[
+            df_sub["날짜"].notna()
+            & df_sub["브랜드"].notna()
+            & df_sub["브랜드"].ne("")
+        ].copy()
+
+    except Exception as e:
+        st.error(
+            "브랜드별 매출 통계 시트를 읽지 못했습니다. "
+            f"공식몰 실매출/정기구독 지표를 계산할 수 없습니다. 오류: {e}"
+        )
+        df_sub = pd.DataFrame(
+            {
+                "날짜": pd.to_datetime([]),
+                "브랜드": pd.Series(dtype="string"),
+                "신규구매_실매출": pd.Series(dtype="float64"),
+                "재구매_실매출": pd.Series(dtype="float64"),
+                "정기구독_금액": pd.Series(dtype="float64"),
+                "브랜드_실매출": pd.Series(dtype="float64"),
+                "공식몰_실매출": pd.Series(dtype="float64"),
+            }
+        )
 
     # 미분류 데이터 비율
     UNCLASSIFIED_RATIO = {
@@ -408,16 +474,23 @@ df_filtered = df_all[df_all["브랜드"].isin(effective_brands)].copy()
 def filter_actual_sales_by_brand(df_sub, brands):
     if df_sub.empty:
         return df_sub.copy()
+
+    # 전체 선택 시 브랜드별 매출 통계 시트에 실제로 존재하는 모든 브랜드를 사용
     if "전체" in brands:
-        return df_sub[df_sub["브랜드"].isin(["셀티아이", "트리어드"])].copy()
+        return df_sub.copy()
+
     target_brands = set()
     for b in brands:
         if "셀티아이" in b:
             target_brands.add("셀티아이")
         if "트리어드" in b:
             target_brands.add("트리어드")
+        if b == "기타":
+            target_brands.add("기타")
+
     if not target_brands:
         return df_sub.iloc[0:0].copy()
+
     return df_sub[df_sub["브랜드"].isin(target_brands)].copy()
 
 
@@ -614,44 +687,24 @@ prev_log_return_rev = (
 cur_log_total_rev = cur_log_new_rev + cur_log_return_rev
 prev_log_total_rev = prev_log_new_rev + prev_log_return_rev
 
-if "전체" in effective_brands:
-    official_target_brands = ["셀티아이", "트리어드"]
-else:
-    official_target_brands = []
-    for b in effective_brands:
-        if "셀티아이" in b and "셀티아이" not in official_target_brands:
-            official_target_brands.append("셀티아이")
-        if "트리어드" in b and "트리어드" not in official_target_brands:
-            official_target_brands.append("트리어드")
-
 has_official_sales_data = not df_sub_all.empty
 
 if has_official_sales_data:
-    show_triad_subscription = (
-        "전체" in effective_brands
-        or any("트리어드" in b for b in effective_brands)
-    )
+    # df_sub_current / df_sub_prev는 이미 사이드바 브랜드 선택이 반영된 상태입니다.
+    # 따라서 특정 브랜드를 다시 하드코딩하지 않고 현재 필터 결과를 그대로 합산합니다.
+    cur_subscription_log = df_sub_current["정기구독_금액"].sum()
+    prev_subscription_log = df_sub_prev["정기구독_금액"].sum()
 
-    if show_triad_subscription:
-        cur_subscription_log = df_sub_current[
-            df_sub_current["브랜드"] == "트리어드"
-        ]["정기구독_금액"].sum()
-        prev_subscription_log = df_sub_prev[
-            df_sub_prev["브랜드"] == "트리어드"
-        ]["정기구독_금액"].sum()
-    else:
-        cur_subscription_log = 0
-        prev_subscription_log = 0
+    cur_official_gross = df_sub_current["브랜드_실매출"].sum()
+    prev_official_gross = df_sub_prev["브랜드_실매출"].sum()
 
-    cur_official_gross = df_sub_current[
-        df_sub_current["브랜드"].isin(official_target_brands)
-    ]["브랜드_실매출"].sum()
-    prev_official_gross = df_sub_prev[
-        df_sub_prev["브랜드"].isin(official_target_brands)
-    ]["브랜드_실매출"].sum()
+    cur_official_actual = df_sub_current["공식몰_실매출"].sum()
+    prev_official_actual = df_sub_prev["공식몰_실매출"].sum()
 
-    cur_official_actual = cur_official_gross - cur_subscription_log
-    prev_official_actual = prev_official_gross - prev_subscription_log
+    # 안전 검증: 공식몰 실매출 = 신규 구매 + 재 구매 - 정기구독 할인금액
+    # 아래 두 값은 원칙적으로 동일해야 합니다.
+    cur_official_check = cur_official_gross - cur_subscription_log
+    prev_official_check = prev_official_gross - prev_subscription_log
 else:
     cur_subscription_log = None
     prev_subscription_log = None
@@ -662,15 +715,15 @@ st.markdown("#### 💰 매출 요약")
 
 if has_official_sales_data:
     st.caption(
-        "※ 공식몰 실매출은 정기구독 데이터의 셀티아이·트리어드 "
-        "'신규 구매 + 재 구매'에서 트리어드 '정기구독 할인금액'을 제외한 순매출입니다. "
-        "로그 매출 합계는 기간별 로그 시트의 로그 신규 매출 + 로그 재방문 매출입니다."
+        "※ 공식몰 실매출은 '브랜드별 매출 통계'의 신규 구매 + 재 구매에서 "
+        "정기구독 할인금액을 제외한 금액입니다. "
+        "정기구독은 같은 시트의 '정기구독 할인금액' 합계이며, "
+        "로그 매출은 25년 하반기·26년 상반기·26년 하반기 로그 시트를 통합해 집계합니다."
     )
 else:
     st.caption(
-        "※ 현재 연결된 '셀로닉스 통합데이터'에는 정기구독/공식몰 실매출 별도 탭이 없습니다. "
-        "따라서 공식몰 실매출·정기구독은 '데이터 없음'으로 표시하고, "
-        "로그 매출 지표는 3개 기간 시트 데이터를 통합해 정상 집계합니다."
+        "※ '브랜드별 매출 통계' 데이터를 읽지 못해 공식몰 실매출·정기구독을 표시할 수 없습니다. "
+        "로그 매출 지표는 기간별 로그 시트 데이터를 통합해 정상 집계합니다."
     )
 
 m1, sep1, m2, m3, m4, sep2, m5 = st.columns(
