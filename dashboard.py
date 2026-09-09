@@ -86,6 +86,7 @@ def load_data():
     # - 26년 하반기   : gid 1268027742
     # - 캠페인 일정표     : gid 1191457819
     # - 브랜드별 매출 통계 : gid 1279114590
+    # - 스마트스토어       : gid 61403901
     #
     # '브랜드별 매출 통계'의 신규 구매 + 재 구매를 공식몰 매출 원천으로 사용하고,
     # 정기구독 할인금액을 제외해 공식몰 실매출을 계산합니다.
@@ -110,6 +111,7 @@ def load_data():
         "26년 하반기": 1268027742,
         "캠페인 일정표": 1191457819,
         "브랜드별 매출 통계": 1279114590,
+        "스마트스토어": 61403901,
     }
 
     data_sheet_gids = {
@@ -292,6 +294,88 @@ def load_data():
             }
         )
 
+    # -----------------------------------------------------
+    # 스마트스토어 → 제품별 순판매금액
+    # -----------------------------------------------------
+    # 실제 시트에서 사용하는 컬럼
+    # A열: 날짜 / H열: 그룹상품명 / O열: 판매금액(순)
+    #
+    # H열이 '전체'인 행은 일자별 전체 합계이므로 집계에는 사용하지 않습니다.
+    # 제품행만 사용해 셀티아이 / 트리어드 / 기타로 분류하고,
+    # '전체' 행은 제품합계 검증용 참고값으로만 보관합니다.
+    try:
+        df_smart_raw = read_sheet_csv(
+            "스마트스토어",
+            usecols=["날짜", "그룹상품명", "판매금액(순)"],
+            dtype={"날짜": "string", "그룹상품명": "string"},
+        )
+        df_smart_raw.columns = [str(c).strip() for c in df_smart_raw.columns]
+
+        df_smart_raw["날짜"] = parse_date_series(df_smart_raw["날짜"])
+        df_smart_raw["상품"] = (
+            df_smart_raw["그룹상품명"]
+            .astype("string")
+            .str.strip()
+        )
+        df_smart_raw["스마트스토어_순판매금액"] = to_number(
+            df_smart_raw["판매금액(순)"]
+        )
+
+        # '전체' 행은 이중 집계를 막기 위해 실제 매출 계산에서 제외
+        df_smart_reference = df_smart_raw[
+            df_smart_raw["상품"].eq("전체")
+        ][["날짜", "스마트스토어_순판매금액"]].copy()
+
+        df_smart = df_smart_raw[
+            df_smart_raw["날짜"].notna()
+            & df_smart_raw["상품"].notna()
+            & df_smart_raw["상품"].ne("")
+            & df_smart_raw["상품"].ne("전체")
+        ][["날짜", "상품", "스마트스토어_순판매금액"]].copy()
+
+        # 브랜드 열을 사용하지 않고 H열 제품명 기준으로 직접 분류
+        # → 제품명이 셀티아이/트리어드를 포함하면 해당 브랜드, 나머지는 기타
+        df_smart["브랜드"] = "기타"
+        cellti_smart_mask = df_smart["상품"].str.contains(
+            "셀티아이", case=False, na=False, regex=False
+        )
+        triad_smart_mask = df_smart["상품"].str.contains(
+            "트리어드", case=False, na=False, regex=False
+        )
+        df_smart.loc[cellti_smart_mask, "브랜드"] = "셀티아이"
+        df_smart.loc[triad_smart_mask, "브랜드"] = "트리어드"
+        df_smart["판매채널"] = "스마트스토어"
+
+        # 같은 날짜·제품이 여러 상품옵션/묶음으로 존재할 수 있으므로 제품 단위로 합산
+        df_smart = (
+            df_smart.groupby(
+                ["날짜", "브랜드", "상품", "판매채널"],
+                as_index=False,
+                observed=False,
+            )["스마트스토어_순판매금액"]
+            .sum()
+        )
+
+        smartstore_reference_rows = len(df_smart_reference)
+        smartstore_product_rows = len(df_smart)
+
+    except Exception as e:
+        st.error(
+            "스마트스토어 시트를 읽지 못했습니다. "
+            f"스마트스토어 제품별 순판매금액을 표시할 수 없습니다. 오류: {e}"
+        )
+        df_smart = pd.DataFrame(
+            {
+                "날짜": pd.to_datetime([]),
+                "브랜드": pd.Series(dtype="string"),
+                "상품": pd.Series(dtype="string"),
+                "판매채널": pd.Series(dtype="string"),
+                "스마트스토어_순판매금액": pd.Series(dtype="float64"),
+            }
+        )
+        smartstore_reference_rows = 0
+        smartstore_product_rows = 0
+
     # 미분류 데이터 비율
     UNCLASSIFIED_RATIO = {
         "셀티아이": 0.6017037623023724,
@@ -444,12 +528,14 @@ def load_data():
         "min_date": df_total["날짜"].min(),
         "max_date": df_total["날짜"].max(),
         "sheet_rows_loaded": sheet_rows_loaded,
+        "smartstore_reference_rows": smartstore_reference_rows,
+        "smartstore_product_rows": smartstore_product_rows,
     }
 
-    return df_main, df_campaign, df_sub, load_info
+    return df_main, df_campaign, df_sub, df_smart, load_info
 
 
-df_all, df_camp_all, df_sub_all, _load_info = load_data()
+df_all, df_camp_all, df_sub_all, df_smart_all, _load_info = load_data()
 
 # 날짜 파싱 상태 진단
 valid_dates = df_all["날짜"].dropna()
@@ -497,6 +583,7 @@ def filter_actual_sales_by_brand(df_sub, brands):
 
 
 df_sub_filtered = filter_actual_sales_by_brand(df_sub_all, effective_brands)
+df_smart_filtered = filter_actual_sales_by_brand(df_smart_all, effective_brands)
 
 if any("인플루언서" in b for b in effective_brands):
     inf_list = df_filtered.get("인플루언서명", pd.Series(dtype="object")).dropna().unique().tolist()
@@ -581,6 +668,10 @@ df_sub_current = df_sub_filtered[
     (df_sub_filtered["날짜"].dt.date >= start_date)
     & (df_sub_filtered["날짜"].dt.date <= end_date)
 ]
+df_smart_current = df_smart_filtered[
+    (df_smart_filtered["날짜"].dt.date >= start_date)
+    & (df_smart_filtered["날짜"].dt.date <= end_date)
+]
 
 duration = (end_date - start_date).days + 1
 prev_start_date = start_date - timedelta(days=duration)
@@ -593,9 +684,13 @@ df_sub_prev = df_sub_filtered[
     (df_sub_filtered["날짜"].dt.date >= prev_start_date)
     & (df_sub_filtered["날짜"].dt.date <= prev_end_date)
 ]
+df_smart_prev = df_smart_filtered[
+    (df_smart_filtered["날짜"].dt.date >= prev_start_date)
+    & (df_smart_filtered["날짜"].dt.date <= prev_end_date)
+]
 
 st.title(
-    f"📈 공식몰 성과 대시보드 ({' + '.join(selected_brands) if len(selected_brands) <= 2 else '종합'})"
+    f"📈 셀로닉스 성과 대시보드 ({' + '.join(selected_brands) if len(selected_brands) <= 2 else '종합'})"
 )
 
 # ---------------------------------------------------------
@@ -713,18 +808,55 @@ else:
     cur_official_actual = None
     prev_official_actual = None
 
-st.markdown("#### 💰 매출 요약")
+has_smartstore_sales_data = not df_smart_all.empty
+cur_smartstore_actual = (
+    df_smart_current["스마트스토어_순판매금액"].sum()
+    if has_smartstore_sales_data
+    else None
+)
+prev_smartstore_actual = (
+    df_smart_prev["스마트스토어_순판매금액"].sum()
+    if has_smartstore_sales_data
+    else None
+)
 
-if has_official_sales_data:
+# 공식몰과 스마트스토어를 병렬 KPI로 늘어놓지 않고,
+# 하나의 실매출 KPI에서 '매출 채널' 태그로 전환해 확인합니다.
+sales_title_col, sales_filter_col = st.columns([4, 2])
+with sales_title_col:
+    st.markdown("#### 💰 매출 요약")
+with sales_filter_col:
+    selected_sales_channel = st.radio(
+        "매출 채널",
+        ["전체", "공식몰", "스마트스토어"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="sales_channel_filter",
+    )
+
+if selected_sales_channel == "공식몰":
+    cur_selected_actual = cur_official_actual
+    prev_selected_actual = prev_official_actual
+    selected_actual_label = "🔥 공식몰 실매출"
+elif selected_sales_channel == "스마트스토어":
+    cur_selected_actual = cur_smartstore_actual
+    prev_selected_actual = prev_smartstore_actual
+    selected_actual_label = "🔥 스마트스토어 순판매금액"
+else:
+    cur_selected_actual = (cur_official_actual or 0) + (cur_smartstore_actual or 0)
+    prev_selected_actual = (prev_official_actual or 0) + (prev_smartstore_actual or 0)
+    selected_actual_label = "🔥 전체 실매출"
+
+if has_official_sales_data or has_smartstore_sales_data:
     st.caption(
-        "※ 공식몰 실매출은 '브랜드별 매출 통계'의 신규 구매 + 재 구매에서 "
-        "정기구독 할인금액을 제외한 금액입니다. "
-        "정기구독은 같은 시트의 '정기구독 할인금액' 합계이며, "
-        "로그 매출은 25년 하반기·26년 상반기·26년 하반기 로그 시트를 통합해 집계합니다."
+        "※ 공식몰 실매출은 '브랜드별 매출 통계'의 신규 구매 + 재 구매 - 정기구독 할인금액입니다. "
+        "스마트스토어는 '스마트스토어' 시트의 H열 그룹상품명 기준 제품행만 사용하고, "
+        "O열 판매금액(순)을 합산합니다. H열이 '전체'인 행은 중복 집계를 막기 위해 참고용으로만 사용합니다. "
+        "로그 매출·정기구독 지표는 기존 공식몰 기준입니다."
     )
 else:
     st.caption(
-        "※ '브랜드별 매출 통계' 데이터를 읽지 못해 공식몰 실매출·정기구독을 표시할 수 없습니다. "
+        "※ 공식몰 및 스마트스토어 매출 데이터를 읽지 못했습니다. "
         "로그 매출 지표는 기간별 로그 시트 데이터를 통합해 정상 집계합니다."
     )
 
@@ -732,14 +864,14 @@ m1, sep1, m2, m3, m4, sep2, m5 = st.columns(
     [1.25, 0.06, 1.15, 1.15, 1.15, 0.06, 1.15]
 )
 
-if has_official_sales_data:
+if cur_selected_actual is not None:
     m1.metric(
-        "🔥 공식몰 실매출",
-        format_currency(cur_official_actual),
-        delta=calculate_delta(cur_official_actual, prev_official_actual),
+        selected_actual_label,
+        format_currency(cur_selected_actual),
+        delta=calculate_delta(cur_selected_actual, prev_selected_actual),
     )
 else:
-    m1.metric("🔥 공식몰 실매출", "데이터 없음")
+    m1.metric(selected_actual_label, "데이터 없음")
 
 with sep1:
     st.markdown(
