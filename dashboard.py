@@ -820,97 +820,129 @@ prev_smartstore_actual = (
     else None
 )
 
-# 공식몰과 스마트스토어를 병렬 KPI로 늘어놓지 않고,
-# 하나의 실매출 KPI에서 '매출 채널' 태그로 전환해 확인합니다.
+# 공식몰과 스마트스토어는 서로 다른 판매채널 데이터입니다.
+# 따라서 둘을 더한 '전체 매출'은 만들지 않고, 태그로 채널을 명확히 분리해 봅니다.
 sales_title_col, sales_filter_col = st.columns([4, 2])
 with sales_title_col:
     st.markdown("#### 💰 매출 요약")
 with sales_filter_col:
     selected_sales_channel = st.radio(
         "매출 채널",
-        ["전체", "공식몰", "스마트스토어"],
+        ["공식몰", "스마트스토어"],
         horizontal=True,
         label_visibility="collapsed",
         key="sales_channel_filter",
     )
 
 if selected_sales_channel == "공식몰":
-    cur_selected_actual = cur_official_actual
-    prev_selected_actual = prev_official_actual
-    selected_actual_label = "🔥 공식몰 실매출"
-elif selected_sales_channel == "스마트스토어":
-    cur_selected_actual = cur_smartstore_actual
-    prev_selected_actual = prev_smartstore_actual
-    selected_actual_label = "🔥 스마트스토어 순판매금액"
-else:
-    cur_selected_actual = (cur_official_actual or 0) + (cur_smartstore_actual or 0)
-    prev_selected_actual = (prev_official_actual or 0) + (prev_smartstore_actual or 0)
-    selected_actual_label = "🔥 전체 실매출"
-
-if has_official_sales_data or has_smartstore_sales_data:
     st.caption(
-        "※ 공식몰 실매출은 '브랜드별 매출 통계'의 신규 구매 + 재 구매 - 정기구독 할인금액입니다. "
-        "스마트스토어는 '스마트스토어' 시트의 H열 그룹상품명 기준 제품행만 사용하고, "
-        "O열 판매금액(순)을 합산합니다. H열이 '전체'인 행은 중복 집계를 막기 위해 참고용으로만 사용합니다. "
-        "로그 매출·정기구독 지표는 기존 공식몰 기준입니다."
+        "※ 공식몰 데이터만 표시합니다. 공식몰 실매출은 '브랜드별 매출 통계'의 "
+        "신규 구매 + 재 구매 - 정기구독 할인금액 기준입니다."
     )
+
+    m1, sep1, m2, m3, m4, sep2, m5 = st.columns(
+        [1.25, 0.06, 1.15, 1.15, 1.15, 0.06, 1.15]
+    )
+
+    if cur_official_actual is not None:
+        m1.metric(
+            "🔥 공식몰 실매출",
+            format_currency(cur_official_actual),
+            delta=calculate_delta(cur_official_actual, prev_official_actual),
+        )
+    else:
+        m1.metric("🔥 공식몰 실매출", "데이터 없음")
+
+    with sep1:
+        st.markdown(
+            "<div style='border-left:1px solid #D9D9D9;height:92px;"
+            "margin:6px auto 0 auto;width:1px;'></div>",
+            unsafe_allow_html=True,
+        )
+
+    m2.metric(
+        "📊 로그 매출 합계",
+        format_currency(cur_log_total_rev),
+        delta=calculate_delta(cur_log_total_rev, prev_log_total_rev),
+    )
+    m3.metric(
+        "✨ 로그 신규 매출",
+        format_currency(cur_log_new_rev),
+        delta=calculate_delta(cur_log_new_rev, prev_log_new_rev),
+    )
+    m4.metric(
+        "🤝 로그 재방문 매출",
+        format_currency(cur_log_return_rev),
+        delta=calculate_delta(cur_log_return_rev, prev_log_return_rev),
+    )
+
+    with sep2:
+        st.markdown(
+            "<div style='border-left:1px solid #D9D9D9;height:92px;"
+            "margin:6px auto 0 auto;width:1px;'></div>",
+            unsafe_allow_html=True,
+        )
+
+    if has_official_sales_data:
+        m5.metric(
+            "🔄 정기구독",
+            format_currency(cur_subscription_log),
+            delta=calculate_delta(cur_subscription_log, prev_subscription_log),
+        )
+    else:
+        m5.metric("🔄 정기구독", "데이터 없음")
+
 else:
     st.caption(
-        "※ 공식몰 및 스마트스토어 매출 데이터를 읽지 못했습니다. "
-        "로그 매출 지표는 기간별 로그 시트 데이터를 통합해 정상 집계합니다."
+        "※ 스마트스토어 데이터만 표시합니다. H열 그룹상품명으로 셀티아이 / 트리어드 / 기타를 분류하고, "
+        "O열 판매금액(순)만 합산합니다. H열이 '전체'인 행은 중복 방지를 위해 집계에서 제외합니다. "
+        "공식몰 실매출·로그 매출·정기구독 데이터와는 합산하지 않습니다."
     )
 
-m1, sep1, m2, m3, m4, sep2, m5 = st.columns(
-    [1.25, 0.06, 1.15, 1.15, 1.15, 0.06, 1.15]
-)
+    # 현재 브랜드 필터가 적용된 스마트스토어 총매출
+    cur_smart_total = df_smart_current["스마트스토어_순판매금액"].sum()
+    prev_smart_total = df_smart_prev["스마트스토어_순판매금액"].sum()
 
-if cur_selected_actual is not None:
-    m1.metric(
-        selected_actual_label,
-        format_currency(cur_selected_actual),
-        delta=calculate_delta(cur_selected_actual, prev_selected_actual),
-    )
-else:
-    m1.metric(selected_actual_label, "데이터 없음")
+    # 제품 분류가 핵심이므로 스마트스토어에서는 브랜드별 순판매금액을 함께 보여줍니다.
+    def smart_brand_sum(df, brand_name):
+        return df.loc[
+            df["브랜드"].eq(brand_name), "스마트스토어_순판매금액"
+        ].sum()
 
-with sep1:
-    st.markdown(
-        "<div style='border-left:1px solid #D9D9D9;height:92px;"
-        "margin:6px auto 0 auto;width:1px;'></div>",
-        unsafe_allow_html=True,
-    )
+    cur_smart_cellti = smart_brand_sum(df_smart_current, "셀티아이")
+    prev_smart_cellti = smart_brand_sum(df_smart_prev, "셀티아이")
+    cur_smart_triad = smart_brand_sum(df_smart_current, "트리어드")
+    prev_smart_triad = smart_brand_sum(df_smart_prev, "트리어드")
+    cur_smart_other = smart_brand_sum(df_smart_current, "기타")
+    prev_smart_other = smart_brand_sum(df_smart_prev, "기타")
 
-m2.metric(
-    "📊 로그 매출 합계",
-    format_currency(cur_log_total_rev),
-    delta=calculate_delta(cur_log_total_rev, prev_log_total_rev),
-)
-m3.metric(
-    "✨ 로그 신규 매출",
-    format_currency(cur_log_new_rev),
-    delta=calculate_delta(cur_log_new_rev, prev_log_new_rev),
-)
-m4.metric(
-    "🤝 로그 재방문 매출",
-    format_currency(cur_log_return_rev),
-    delta=calculate_delta(cur_log_return_rev, prev_log_return_rev),
-)
-
-with sep2:
-    st.markdown(
-        "<div style='border-left:1px solid #D9D9D9;height:92px;"
-        "margin:6px auto 0 auto;width:1px;'></div>",
-        unsafe_allow_html=True,
-    )
-
-if has_official_sales_data:
-    m5.metric(
-        "🔄 정기구독",
-        format_currency(cur_subscription_log),
-        delta=calculate_delta(cur_subscription_log, prev_subscription_log),
-    )
-else:
-    m5.metric("🔄 정기구독", "데이터 없음")
+    s1, s2, s3, s4 = st.columns(4)
+    if has_smartstore_sales_data:
+        s1.metric(
+            "🔥 스마트스토어 순판매금액",
+            format_currency(cur_smart_total),
+            delta=calculate_delta(cur_smart_total, prev_smart_total),
+        )
+        s2.metric(
+            "셀티아이",
+            format_currency(cur_smart_cellti),
+            delta=calculate_delta(cur_smart_cellti, prev_smart_cellti),
+        )
+        s3.metric(
+            "트리어드",
+            format_currency(cur_smart_triad),
+            delta=calculate_delta(cur_smart_triad, prev_smart_triad),
+        )
+        s4.metric(
+            "기타",
+            format_currency(cur_smart_other),
+            delta=calculate_delta(cur_smart_other, prev_smart_other),
+        )
+    else:
+        s1.metric("🔥 스마트스토어 순판매금액", "데이터 없음")
+        s2.metric("셀티아이", "데이터 없음")
+        s3.metric("트리어드", "데이터 없음")
+        s4.metric("기타", "데이터 없음")
 
 st.markdown("---")
 
