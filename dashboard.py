@@ -295,18 +295,18 @@ def load_data():
         )
 
     # -----------------------------------------------------
-    # 스마트스토어 → 제품별 판매/유입/구매전환 데이터
+    # 스마트스토어 → 제품별 판매/유입/결제상품수량 데이터
     # -----------------------------------------------------
     # 실제 시트에서 사용하는 컬럼
     # A열: 날짜 / H열: 그룹상품명 / O열: 판매금액(순)
-    # W열: 방문수 / X열: 구매전환율
+    # S열: 결제상품수량 / W열: 방문수
     #
     # H열이 '전체'인 행은 일자별 전체 합계이므로 집계에는 사용하지 않습니다.
     # 제품행만 사용해 셀티아이 / 트리어드 / 기타로 분류합니다.
     try:
         df_smart_raw = read_sheet_csv(
             "스마트스토어",
-            usecols=["날짜", "그룹상품명", "판매금액(순)", "방문수", "구매전환율"],
+            usecols=["날짜", "그룹상품명", "판매금액(순)", "결제상품수량", "방문수"],
             dtype={"날짜": "string", "그룹상품명": "string"},
         )
         df_smart_raw.columns = [str(c).strip() for c in df_smart_raw.columns]
@@ -320,16 +320,10 @@ def load_data():
         df_smart_raw["스마트스토어_순판매금액"] = to_number(
             df_smart_raw["판매금액(순)"]
         )
+        df_smart_raw["스마트스토어_결제상품수량"] = to_number(
+            df_smart_raw["결제상품수량"]
+        )
         df_smart_raw["스마트스토어_방문수"] = to_number(df_smart_raw["방문수"])
-        df_smart_raw["스마트스토어_구매전환율"] = to_number(
-            df_smart_raw["구매전환율"]
-        )
-        # 여러 행을 합칠 때 전환율을 단순 평균하지 않기 위한 가중치용 값
-        df_smart_raw["_스마트스토어_전환기여"] = (
-            df_smart_raw["스마트스토어_방문수"]
-            * df_smart_raw["스마트스토어_구매전환율"]
-            / 100.0
-        )
 
         # '전체' 행은 제품별 집계와 중복되므로 참고값으로만 보관
         df_smart_reference = df_smart_raw[
@@ -338,8 +332,8 @@ def load_data():
             [
                 "날짜",
                 "스마트스토어_순판매금액",
+                "스마트스토어_결제상품수량",
                 "스마트스토어_방문수",
-                "스마트스토어_구매전환율",
             ]
         ].copy()
 
@@ -353,9 +347,8 @@ def load_data():
                 "날짜",
                 "상품",
                 "스마트스토어_순판매금액",
+                "스마트스토어_결제상품수량",
                 "스마트스토어_방문수",
-                "스마트스토어_구매전환율",
-                "_스마트스토어_전환기여",
             ]
         ].copy()
 
@@ -380,19 +373,12 @@ def load_data():
             )[
                 [
                     "스마트스토어_순판매금액",
+                    "스마트스토어_결제상품수량",
                     "스마트스토어_방문수",
-                    "_스마트스토어_전환기여",
                 ]
             ]
             .sum()
         )
-        df_smart["스마트스토어_구매전환율"] = (
-            df_smart["_스마트스토어_전환기여"]
-            .div(df_smart["스마트스토어_방문수"].replace(0, pd.NA))
-            .mul(100)
-            .fillna(0)
-        )
-
         smartstore_reference_rows = len(df_smart_reference)
         smartstore_product_rows = len(df_smart)
 
@@ -408,9 +394,8 @@ def load_data():
                 "상품": pd.Series(dtype="string"),
                 "판매채널": pd.Series(dtype="string"),
                 "스마트스토어_순판매금액": pd.Series(dtype="float64"),
+                "스마트스토어_결제상품수량": pd.Series(dtype="float64"),
                 "스마트스토어_방문수": pd.Series(dtype="float64"),
-                "스마트스토어_구매전환율": pd.Series(dtype="float64"),
-                "_스마트스토어_전환기여": pd.Series(dtype="float64"),
             }
         )
         smartstore_reference_rows = 0
@@ -789,14 +774,6 @@ df_smart_prev = df_smart_filtered[
 ]
 
 
-def smartstore_weighted_conversion(df):
-    """제품별 방문수를 가중치로 스마트스토어 구매전환율을 계산합니다."""
-    if df.empty:
-        return None
-    visits = df["스마트스토어_방문수"].sum()
-    if visits <= 0:
-        return None
-    return (df["_스마트스토어_전환기여"].sum() / visits) * 100
 
 
 dashboard_filter_title = (
@@ -815,8 +792,8 @@ cur_official_visits = df_current["총방문수"].sum()
 prev_official_visits = df_prev["총방문수"].sum()
 cur_smart_visits = df_smart_current["스마트스토어_방문수"].sum()
 prev_smart_visits = df_smart_prev["스마트스토어_방문수"].sum()
-cur_smart_conv = smartstore_weighted_conversion(df_smart_current)
-prev_smart_conv = smartstore_weighted_conversion(df_smart_prev)
+cur_smart_qty = df_smart_current["스마트스토어_결제상품수량"].sum()
+prev_smart_qty = df_smart_prev["스마트스토어_결제상품수량"].sum()
 
 cur_official_total_purchase = df_current["총구매수"].sum()
 prev_official_total_purchase = df_prev["총구매수"].sum()
@@ -900,13 +877,9 @@ with col_kpi1:
             delta=calculate_delta(cur_smart_visits, prev_smart_visits),
         )
         k2.metric(
-            "스마트스토어 구매전환율",
-            f"{cur_smart_conv:.1f}%" if cur_smart_conv is not None else "데이터 없음",
-            delta=(
-                f"{cur_smart_conv - prev_smart_conv:+.1f}%p"
-                if cur_smart_conv is not None and prev_smart_conv is not None
-                else None
-            ),
+            "스마트스토어 결제상품수량",
+            format_number(cur_smart_qty),
+            delta=calculate_delta(cur_smart_qty, prev_smart_qty),
         )
 
 with col_kpi2:
@@ -933,25 +906,17 @@ with col_kpi2:
         )
         if has_smartstore_selection:
             k7.metric(
-                "스마트스토어 구매전환율",
-                f"{cur_smart_conv:.1f}%" if cur_smart_conv is not None else "데이터 없음",
-                delta=(
-                    f"{cur_smart_conv - prev_smart_conv:+.1f}%p"
-                    if cur_smart_conv is not None and prev_smart_conv is not None
-                    else None
-                ),
+                "스마트스토어 결제상품수량",
+                format_number(cur_smart_qty),
+                delta=calculate_delta(cur_smart_qty, prev_smart_qty),
             )
     else:
         st.markdown("#### 🛒 스마트스토어 구매 지표")
         k4, k5 = st.columns(2)
         k4.metric(
-            "구매전환율",
-            f"{cur_smart_conv:.1f}%" if cur_smart_conv is not None else "데이터 없음",
-            delta=(
-                f"{cur_smart_conv - prev_smart_conv:+.1f}%p"
-                if cur_smart_conv is not None and prev_smart_conv is not None
-                else None
-            ),
+            "결제상품수량",
+            format_number(cur_smart_qty),
+            delta=calculate_delta(cur_smart_qty, prev_smart_qty),
         )
         k5.metric(
             "제품 수",
@@ -1105,7 +1070,7 @@ elif has_official_selection:
 else:
     st.caption(
         "※ 스마트스토어 제품행만 표시합니다. H열 그룹상품명 / O열 판매금액(순) / "
-        "W열 방문수 / X열 구매전환율을 사용하며, H열 '전체' 행은 중복 방지를 위해 집계에서 제외합니다."
+        "S열 결제상품수량 / W열 방문수를 사용하며, H열 '전체' 행은 중복 방지를 위해 집계에서 제외합니다."
     )
     s1, s2, s3, s4 = st.columns(4)
     if cur_smartstore_actual is not None:
@@ -1122,13 +1087,9 @@ else:
         delta=calculate_delta(cur_smart_visits, prev_smart_visits),
     )
     s3.metric(
-        "구매전환율",
-        f"{cur_smart_conv:.1f}%" if cur_smart_conv is not None else "데이터 없음",
-        delta=(
-            f"{cur_smart_conv - prev_smart_conv:+.1f}%p"
-            if cur_smart_conv is not None and prev_smart_conv is not None
-            else None
-        ),
+        "결제상품수량",
+        format_number(cur_smart_qty),
+        delta=calculate_delta(cur_smart_qty, prev_smart_qty),
     )
     s4.metric("상품 수", format_number(df_smart_current["상품"].nunique()))
 
@@ -1139,26 +1100,21 @@ if has_smartstore_selection:
             df_smart_current.groupby(["브랜드", "상품"], as_index=False)[
                 [
                     "스마트스토어_순판매금액",
+                    "스마트스토어_결제상품수량",
                     "스마트스토어_방문수",
-                    "_스마트스토어_전환기여",
                 ]
             ]
             .sum()
         )
         if not product_view.empty:
-            product_view["구매전환율"] = (
-                product_view["_스마트스토어_전환기여"]
-                .div(product_view["스마트스토어_방문수"].replace(0, pd.NA))
-                .mul(100)
-                .fillna(0)
-            )
             product_view = product_view.rename(
                 columns={
                     "상품": "상품명",
                     "스마트스토어_순판매금액": "판매금액(순)",
+                    "스마트스토어_결제상품수량": "결제상품수량",
                     "스마트스토어_방문수": "방문수",
                 }
-            )[["브랜드", "상품명", "판매금액(순)", "방문수", "구매전환율"]]
+            )[["브랜드", "상품명", "판매금액(순)", "결제상품수량", "방문수"]]
             product_view = product_view.sort_values("판매금액(순)", ascending=False)
             st.dataframe(
                 product_view,
@@ -1168,8 +1124,8 @@ if has_smartstore_selection:
                     "브랜드": st.column_config.TextColumn("브랜드"),
                     "상품명": st.column_config.TextColumn("상품명", width="large"),
                     "판매금액(순)": st.column_config.NumberColumn("판매금액(순)", format="₩%d"),
+                    "결제상품수량": st.column_config.NumberColumn("결제상품수량", format="%d"),
                     "방문수": st.column_config.NumberColumn("방문수", format="%d"),
-                    "구매전환율": st.column_config.NumberColumn("구매전환율", format="%.1f%%"),
                 },
             )
         else:
@@ -1232,7 +1188,7 @@ def aggregate_smartstore_trend(df, mode):
                 "날짜",
                 "스마트스토어_방문수",
                 "스마트스토어_순판매금액",
-                "스마트스토어_구매전환율",
+                "스마트스토어_결제상품수량",
             ]
         )
 
@@ -1249,17 +1205,11 @@ def aggregate_smartstore_trend(df, mode):
             [
                 "스마트스토어_방문수",
                 "스마트스토어_순판매금액",
-                "_스마트스토어_전환기여",
+                "스마트스토어_결제상품수량",
             ]
         ]
         .sum()
         .rename(columns={"집계일": "날짜"})
-    )
-    out["스마트스토어_구매전환율"] = (
-        out["_스마트스토어_전환기여"]
-        .div(out["스마트스토어_방문수"].replace(0, pd.NA))
-        .mul(100)
-        .fillna(0)
     )
     return out
 
@@ -1313,13 +1263,13 @@ if has_smartstore_selection and not df_smart_trend.empty:
     fig_trend.add_trace(
         go.Scatter(
             x=df_smart_trend["날짜"],
-            y=df_smart_trend["스마트스토어_구매전환율"],
-            name="스마트스토어 구매전환율",
+            y=df_smart_trend["스마트스토어_결제상품수량"],
+            name="스마트스토어 결제상품수량",
             mode="lines+markers",
-            yaxis="y3",
+            yaxis="y2",
             line=dict(color="#1B5E20", width=2.5, dash="dot"),
             marker=dict(size=6),
-            hovertemplate="%{y:.1f}%<extra>스마트스토어 구매전환율</extra>",
+            hovertemplate="%{y:,.0f}<extra>스마트스토어 결제상품수량</extra>",
         )
     )
 
@@ -1329,23 +1279,12 @@ fig_trend.update_layout(
     height=350,
     yaxis=dict(title="방문수", side="left", showgrid=True, gridcolor="#f0f2f6"),
     yaxis2=dict(
-        title="공식몰 구매건수",
+        title="구매수 / 결제상품수량",
         overlaying="y",
         side="right",
         showgrid=False,
-        showticklabels=has_official_selection,
+        showticklabels=(has_official_selection or has_smartstore_selection),
         title_font=dict(color="#FF5252"),
-    ),
-    yaxis3=dict(
-        title="스마트스토어 구매전환율",
-        overlaying="y",
-        side="right",
-        anchor="free",
-        position=0.94,
-        showgrid=False,
-        ticksuffix="%",
-        showticklabels=has_smartstore_selection,
-        title_font=dict(color="#1B5E20"),
     ),
     legend=dict(
         orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5
@@ -1741,5 +1680,5 @@ else:
     st.markdown("---")
     st.info(
         "스마트스토어 단독 선택 시에는 매체·신규/재방문·가입 단계 데이터가 없으므로 "
-        "공식몰 전용 퍼널/매체 분석은 표시하지 않습니다. 위의 스마트스토어 방문수·구매전환율·제품별 데이터를 확인해 주세요."
+        "공식몰 전용 퍼널/매체 분석은 표시하지 않습니다. 위의 스마트스토어 방문수·결제상품수량·제품별 데이터를 확인해 주세요."
     )
