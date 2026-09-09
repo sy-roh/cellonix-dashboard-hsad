@@ -295,18 +295,18 @@ def load_data():
         )
 
     # -----------------------------------------------------
-    # 스마트스토어 → 제품별 순판매금액
+    # 스마트스토어 → 제품별 판매/유입/구매전환 데이터
     # -----------------------------------------------------
     # 실제 시트에서 사용하는 컬럼
     # A열: 날짜 / H열: 그룹상품명 / O열: 판매금액(순)
+    # W열: 방문수 / X열: 구매전환율
     #
     # H열이 '전체'인 행은 일자별 전체 합계이므로 집계에는 사용하지 않습니다.
-    # 제품행만 사용해 셀티아이 / 트리어드 / 기타로 분류하고,
-    # '전체' 행은 제품합계 검증용 참고값으로만 보관합니다.
+    # 제품행만 사용해 셀티아이 / 트리어드 / 기타로 분류합니다.
     try:
         df_smart_raw = read_sheet_csv(
             "스마트스토어",
-            usecols=["날짜", "그룹상품명", "판매금액(순)"],
+            usecols=["날짜", "그룹상품명", "판매금액(순)", "방문수", "구매전환율"],
             dtype={"날짜": "string", "그룹상품명": "string"},
         )
         df_smart_raw.columns = [str(c).strip() for c in df_smart_raw.columns]
@@ -320,21 +320,46 @@ def load_data():
         df_smart_raw["스마트스토어_순판매금액"] = to_number(
             df_smart_raw["판매금액(순)"]
         )
+        df_smart_raw["스마트스토어_방문수"] = to_number(df_smart_raw["방문수"])
+        df_smart_raw["스마트스토어_구매전환율"] = to_number(
+            df_smart_raw["구매전환율"]
+        )
+        # 여러 행을 합칠 때 전환율을 단순 평균하지 않기 위한 가중치용 값
+        df_smart_raw["_스마트스토어_전환기여"] = (
+            df_smart_raw["스마트스토어_방문수"]
+            * df_smart_raw["스마트스토어_구매전환율"]
+            / 100.0
+        )
 
-        # '전체' 행은 이중 집계를 막기 위해 실제 매출 계산에서 제외
+        # '전체' 행은 제품별 집계와 중복되므로 참고값으로만 보관
         df_smart_reference = df_smart_raw[
             df_smart_raw["상품"].eq("전체")
-        ][["날짜", "스마트스토어_순판매금액"]].copy()
+        ][
+            [
+                "날짜",
+                "스마트스토어_순판매금액",
+                "스마트스토어_방문수",
+                "스마트스토어_구매전환율",
+            ]
+        ].copy()
 
         df_smart = df_smart_raw[
             df_smart_raw["날짜"].notna()
             & df_smart_raw["상품"].notna()
             & df_smart_raw["상품"].ne("")
             & df_smart_raw["상품"].ne("전체")
-        ][["날짜", "상품", "스마트스토어_순판매금액"]].copy()
+        ][
+            [
+                "날짜",
+                "상품",
+                "스마트스토어_순판매금액",
+                "스마트스토어_방문수",
+                "스마트스토어_구매전환율",
+                "_스마트스토어_전환기여",
+            ]
+        ].copy()
 
         # 브랜드 열을 사용하지 않고 H열 제품명 기준으로 직접 분류
-        # → 제품명이 셀티아이/트리어드를 포함하면 해당 브랜드, 나머지는 기타
         df_smart["브랜드"] = "기타"
         cellti_smart_mask = df_smart["상품"].str.contains(
             "셀티아이", case=False, na=False, regex=False
@@ -346,14 +371,26 @@ def load_data():
         df_smart.loc[triad_smart_mask, "브랜드"] = "트리어드"
         df_smart["판매채널"] = "스마트스토어"
 
-        # 같은 날짜·제품이 여러 상품옵션/묶음으로 존재할 수 있으므로 제품 단위로 합산
+        # 같은 날짜·그룹상품명이 여러 옵션으로 존재할 수 있으므로 제품 단위로 합산
         df_smart = (
             df_smart.groupby(
                 ["날짜", "브랜드", "상품", "판매채널"],
                 as_index=False,
                 observed=False,
-            )["스마트스토어_순판매금액"]
+            )[
+                [
+                    "스마트스토어_순판매금액",
+                    "스마트스토어_방문수",
+                    "_스마트스토어_전환기여",
+                ]
+            ]
             .sum()
+        )
+        df_smart["스마트스토어_구매전환율"] = (
+            df_smart["_스마트스토어_전환기여"]
+            .div(df_smart["스마트스토어_방문수"].replace(0, pd.NA))
+            .mul(100)
+            .fillna(0)
         )
 
         smartstore_reference_rows = len(df_smart_reference)
@@ -362,7 +399,7 @@ def load_data():
     except Exception as e:
         st.error(
             "스마트스토어 시트를 읽지 못했습니다. "
-            f"스마트스토어 제품별 순판매금액을 표시할 수 없습니다. 오류: {e}"
+            f"스마트스토어 제품별 데이터를 표시할 수 없습니다. 오류: {e}"
         )
         df_smart = pd.DataFrame(
             {
@@ -371,6 +408,9 @@ def load_data():
                 "상품": pd.Series(dtype="string"),
                 "판매채널": pd.Series(dtype="string"),
                 "스마트스토어_순판매금액": pd.Series(dtype="float64"),
+                "스마트스토어_방문수": pd.Series(dtype="float64"),
+                "스마트스토어_구매전환율": pd.Series(dtype="float64"),
+                "_스마트스토어_전환기여": pd.Series(dtype="float64"),
             }
         )
         smartstore_reference_rows = 0
@@ -548,42 +588,97 @@ if valid_dates.empty:
 # ---------------------------------------------------------
 st.sidebar.header("📊 필터")
 
-brand_options = ["전체", "셀티아이", "셀티아이 인플루언서", "트리어드", "트리어드 인플루언서", "기타"]
+# 브랜드와 판매채널을 하나의 필터에서 선택합니다.
+# 기존 데이터는 (공식몰), 스마트스토어 데이터는 (스마트스토어)로 명확히 구분합니다.
+OFFICIAL_BRAND_LABELS = {
+    "셀티아이(공식몰)": "셀티아이",
+    "셀티아이 인플루언서(공식몰)": "셀티아이 인플루언서",
+    "트리어드(공식몰)": "트리어드",
+    "트리어드 인플루언서(공식몰)": "트리어드 인플루언서",
+    "기타(공식몰)": "기타",
+}
+SMARTSTORE_BRAND_LABELS = {
+    "셀티아이(스마트스토어)": "셀티아이",
+    "트리어드(스마트스토어)": "트리어드",
+    "기타(스마트스토어)": "기타",
+}
+
+brand_options = [
+    "전체",
+    "셀티아이(공식몰)",
+    "셀티아이(스마트스토어)",
+    "셀티아이 인플루언서(공식몰)",
+    "트리어드(공식몰)",
+    "트리어드(스마트스토어)",
+    "트리어드 인플루언서(공식몰)",
+    "기타(공식몰)",
+    "기타(스마트스토어)",
+]
 selected_brands = st.sidebar.multiselect("📌 브랜드 선택", brand_options, default=["전체"])
 
 if not selected_brands:
     st.warning("👈 브랜드를 선택해 주세요.")
     st.stop()
 
-effective_brands = ["전체"] if "전체" in selected_brands else selected_brands
-df_filtered = df_all[df_all["브랜드"].isin(effective_brands)].copy()
+select_all_sources = "전체" in selected_brands
 
+if select_all_sources:
+    # 공식몰은 df_all의 '전체' 행이 중복 없는 원본 전체값입니다.
+    selected_official_brands = ["전체"]
+    # 스마트스토어는 제품행을 브랜드별로 모두 사용합니다.
+    selected_smartstore_brands = ["셀티아이", "트리어드", "기타"]
+    selected_official_sales_brands = None  # 브랜드별 매출 통계 전체
+else:
+    selected_official_brands = [
+        OFFICIAL_BRAND_LABELS[x]
+        for x in selected_brands
+        if x in OFFICIAL_BRAND_LABELS
+    ]
+    selected_smartstore_brands = [
+        SMARTSTORE_BRAND_LABELS[x]
+        for x in selected_brands
+        if x in SMARTSTORE_BRAND_LABELS
+    ]
 
-def filter_actual_sales_by_brand(df_sub, brands):
-    if df_sub.empty:
-        return df_sub.copy()
-
-    # 전체 선택 시 브랜드별 매출 통계 시트에 실제로 존재하는 모든 브랜드를 사용
-    if "전체" in brands:
-        return df_sub.copy()
-
-    target_brands = set()
-    for b in brands:
+    # 공식몰 실매출 시트는 인플루언서 단위가 없으므로 기본 브랜드로 매핑
+    selected_official_sales_brands = set()
+    for b in selected_official_brands:
         if "셀티아이" in b:
-            target_brands.add("셀티아이")
-        if "트리어드" in b:
-            target_brands.add("트리어드")
-        if b == "기타":
-            target_brands.add("기타")
+            selected_official_sales_brands.add("셀티아이")
+        elif "트리어드" in b:
+            selected_official_sales_brands.add("트리어드")
+        elif b == "기타":
+            selected_official_sales_brands.add("기타")
 
-    if not target_brands:
-        return df_sub.iloc[0:0].copy()
+has_official_selection = len(selected_official_brands) > 0
+has_smartstore_selection = len(selected_smartstore_brands) > 0
 
-    return df_sub[df_sub["브랜드"].isin(target_brands)].copy()
+if has_official_selection:
+    df_filtered = df_all[df_all["브랜드"].isin(selected_official_brands)].copy()
+else:
+    df_filtered = df_all.iloc[0:0].copy()
 
+if has_smartstore_selection:
+    df_smart_filtered = df_smart_all[
+        df_smart_all["브랜드"].isin(selected_smartstore_brands)
+    ].copy()
+else:
+    df_smart_filtered = df_smart_all.iloc[0:0].copy()
 
-df_sub_filtered = filter_actual_sales_by_brand(df_sub_all, effective_brands)
-df_smart_filtered = filter_actual_sales_by_brand(df_smart_all, effective_brands)
+if not has_official_selection:
+    df_sub_filtered = df_sub_all.iloc[0:0].copy()
+elif select_all_sources:
+    df_sub_filtered = df_sub_all.copy()
+elif selected_official_sales_brands:
+    df_sub_filtered = df_sub_all[
+        df_sub_all["브랜드"].isin(selected_official_sales_brands)
+    ].copy()
+else:
+    df_sub_filtered = df_sub_all.iloc[0:0].copy()
+
+# 기존 코드의 influencer toggle 호환용
+# 실제 필터 문자열은 (공식몰) 표시를 제외한 내부 브랜드명을 사용합니다.
+effective_brands = selected_official_brands.copy()
 
 if any("인플루언서" in b for b in effective_brands):
     inf_list = df_filtered.get("인플루언서명", pd.Series(dtype="object")).dropna().unique().tolist()
@@ -594,7 +689,11 @@ if any("인플루언서" in b for b in effective_brands):
             | df_filtered["인플루언서명"].isin(selected_infs)
         ]
 
-valid_dates = df_all["날짜"].dropna()
+# 날짜 선택 범위는 공식몰 + 스마트스토어 전체 데이터 범위를 함께 반영
+_date_parts = [df_all["날짜"].dropna()]
+if not df_smart_all.empty:
+    _date_parts.append(df_smart_all["날짜"].dropna())
+valid_dates = pd.concat(_date_parts, ignore_index=True).dropna()
 min_date = valid_dates.min().date()
 max_date = valid_dates.max().date()
 
@@ -689,75 +788,175 @@ df_smart_prev = df_smart_filtered[
     & (df_smart_filtered["날짜"].dt.date <= prev_end_date)
 ]
 
-st.title(
-    f"📈 셀로닉스 성과 대시보드 ({' + '.join(selected_brands) if len(selected_brands) <= 2 else '종합'})"
+
+def smartstore_weighted_conversion(df):
+    """제품별 방문수를 가중치로 스마트스토어 구매전환율을 계산합니다."""
+    if df.empty:
+        return None
+    visits = df["스마트스토어_방문수"].sum()
+    if visits <= 0:
+        return None
+    return (df["_스마트스토어_전환기여"].sum() / visits) * 100
+
+
+dashboard_filter_title = (
+    "전체"
+    if select_all_sources
+    else (" + ".join(selected_brands) if len(selected_brands) <= 2 else "종합")
 )
+st.title(f"📈 셀로닉스 성과 대시보드 ({dashboard_filter_title})")
 
 # ---------------------------------------------------------
 # 상단 KPI
 # ---------------------------------------------------------
 st.caption(f"※ 비교 기간: 직전 동일 기간 ({prev_start_date} ~ {prev_end_date}) 대비")
 
+cur_official_visits = df_current["총방문수"].sum()
+prev_official_visits = df_prev["총방문수"].sum()
+cur_smart_visits = df_smart_current["스마트스토어_방문수"].sum()
+prev_smart_visits = df_smart_prev["스마트스토어_방문수"].sum()
+cur_smart_conv = smartstore_weighted_conversion(df_smart_current)
+prev_smart_conv = smartstore_weighted_conversion(df_smart_prev)
+
+cur_official_total_purchase = df_current["총구매수"].sum()
+prev_official_total_purchase = df_prev["총구매수"].sum()
+cur_new_purchase = (
+    df_current["신규방문_신규구매_건수"].sum()
+    + df_current["신규방문_재구매_건수"].sum()
+)
+prev_new_purchase = (
+    df_prev["신규방문_신규구매_건수"].sum()
+    + df_prev["신규방문_재구매_건수"].sum()
+)
+cur_return_purchase = (
+    df_current["재방문_신규구매_건수"].sum()
+    + df_current["재방문_재구매_건수"].sum()
+)
+prev_return_purchase = (
+    df_prev["재방문_신규구매_건수"].sum()
+    + df_prev["재방문_재구매_건수"].sum()
+)
+
 col_kpi1, col_kpi2 = st.columns(2)
 with col_kpi1:
     st.markdown("#### 👥 유입 지표")
-    k1, k2, k3 = st.columns(3)
-    k1.metric(
-        "총 방문수",
-        format_number(df_current["총방문수"].sum()),
-        delta=calculate_delta(df_current["총방문수"].sum(), df_prev["총방문수"].sum()),
-    )
-    k2.metric(
-        "신규 방문수",
-        format_number(df_current["신규방문_총 방문수"].sum()),
-        delta=calculate_delta(
-            df_current["신규방문_총 방문수"].sum(),
-            df_prev["신규방문_총 방문수"].sum(),
-        ),
-    )
-    k3.metric(
-        "재방문수",
-        format_number(df_current["재방문_총 방문수"].sum()),
-        delta=calculate_delta(
-            df_current["재방문_총 방문수"].sum(),
-            df_prev["재방문_총 방문수"].sum(),
-        ),
-    )
+    if has_official_selection and has_smartstore_selection:
+        # 전체/혼합 선택에서도 두 채널을 합산하지 않고 분리해 표시
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric(
+            "공식몰 방문수",
+            format_number(cur_official_visits),
+            delta=calculate_delta(cur_official_visits, prev_official_visits),
+        )
+        k2.metric(
+            "공식몰 신규 방문",
+            format_number(df_current["신규방문_총 방문수"].sum()),
+            delta=calculate_delta(
+                df_current["신규방문_총 방문수"].sum(),
+                df_prev["신규방문_총 방문수"].sum(),
+            ),
+        )
+        k3.metric(
+            "공식몰 재방문",
+            format_number(df_current["재방문_총 방문수"].sum()),
+            delta=calculate_delta(
+                df_current["재방문_총 방문수"].sum(),
+                df_prev["재방문_총 방문수"].sum(),
+            ),
+        )
+        k4.metric(
+            "스마트스토어 방문수",
+            format_number(cur_smart_visits),
+            delta=calculate_delta(cur_smart_visits, prev_smart_visits),
+        )
+    elif has_official_selection:
+        k1, k2, k3 = st.columns(3)
+        k1.metric(
+            "총 방문수",
+            format_number(cur_official_visits),
+            delta=calculate_delta(cur_official_visits, prev_official_visits),
+        )
+        k2.metric(
+            "신규 방문수",
+            format_number(df_current["신규방문_총 방문수"].sum()),
+            delta=calculate_delta(
+                df_current["신규방문_총 방문수"].sum(),
+                df_prev["신규방문_총 방문수"].sum(),
+            ),
+        )
+        k3.metric(
+            "재방문수",
+            format_number(df_current["재방문_총 방문수"].sum()),
+            delta=calculate_delta(
+                df_current["재방문_총 방문수"].sum(),
+                df_prev["재방문_총 방문수"].sum(),
+            ),
+        )
+    else:
+        k1, k2 = st.columns(2)
+        k1.metric(
+            "스마트스토어 방문수",
+            format_number(cur_smart_visits),
+            delta=calculate_delta(cur_smart_visits, prev_smart_visits),
+        )
+        k2.metric(
+            "스마트스토어 구매전환율",
+            f"{cur_smart_conv:.1f}%" if cur_smart_conv is not None else "데이터 없음",
+            delta=(
+                f"{cur_smart_conv - prev_smart_conv:+.1f}%p"
+                if cur_smart_conv is not None and prev_smart_conv is not None
+                else None
+            ),
+        )
 
 with col_kpi2:
-    st.markdown("#### 🛒 구매 건수 지표")
-    k4, k5, k6 = st.columns(3)
-    k4.metric(
-        "총 구매",
-        format_number(df_current["총구매수"].sum()),
-        delta=calculate_delta(df_current["총구매수"].sum(), df_prev["총구매수"].sum()),
-    )
-    cur_new_purchase = (
-        df_current["신규방문_신규구매_건수"].sum()
-        + df_current["신규방문_재구매_건수"].sum()
-    )
-    prev_new_purchase = (
-        df_prev["신규방문_신규구매_건수"].sum()
-        + df_prev["신규방문_재구매_건수"].sum()
-    )
-    k5.metric(
-        "신규 구매",
-        format_number(cur_new_purchase),
-        delta=calculate_delta(cur_new_purchase, prev_new_purchase),
-    )
-    cur_return_purchase = (
-        df_current["재방문_신규구매_건수"].sum()
-        + df_current["재방문_재구매_건수"].sum()
-    )
-    prev_return_purchase = (
-        df_prev["재방문_신규구매_건수"].sum()
-        + df_prev["재방문_재구매_건수"].sum()
-    )
-    k6.metric(
-        "재방문 구매",
-        format_number(cur_return_purchase),
-        delta=calculate_delta(cur_return_purchase, prev_return_purchase),
-    )
+    if has_official_selection:
+        st.markdown("#### 🛒 구매 지표")
+        if has_smartstore_selection:
+            k4, k5, k6, k7 = st.columns(4)
+        else:
+            k4, k5, k6 = st.columns(3)
+        k4.metric(
+            "공식몰 총 구매",
+            format_number(cur_official_total_purchase),
+            delta=calculate_delta(cur_official_total_purchase, prev_official_total_purchase),
+        )
+        k5.metric(
+            "공식몰 신규 구매",
+            format_number(cur_new_purchase),
+            delta=calculate_delta(cur_new_purchase, prev_new_purchase),
+        )
+        k6.metric(
+            "공식몰 재방문 구매",
+            format_number(cur_return_purchase),
+            delta=calculate_delta(cur_return_purchase, prev_return_purchase),
+        )
+        if has_smartstore_selection:
+            k7.metric(
+                "스마트스토어 구매전환율",
+                f"{cur_smart_conv:.1f}%" if cur_smart_conv is not None else "데이터 없음",
+                delta=(
+                    f"{cur_smart_conv - prev_smart_conv:+.1f}%p"
+                    if cur_smart_conv is not None and prev_smart_conv is not None
+                    else None
+                ),
+            )
+    else:
+        st.markdown("#### 🛒 스마트스토어 구매 지표")
+        k4, k5 = st.columns(2)
+        k4.metric(
+            "구매전환율",
+            f"{cur_smart_conv:.1f}%" if cur_smart_conv is not None else "데이터 없음",
+            delta=(
+                f"{cur_smart_conv - prev_smart_conv:+.1f}%p"
+                if cur_smart_conv is not None and prev_smart_conv is not None
+                else None
+            ),
+        )
+        k5.metric(
+            "제품 수",
+            format_number(df_smart_current["상품"].nunique()),
+        )
 
 st.markdown("<hr style='margin:0.5rem 0'>", unsafe_allow_html=True)
 
@@ -821,29 +1020,15 @@ prev_smartstore_actual = (
 )
 
 # 공식몰과 스마트스토어는 서로 다른 판매채널 데이터입니다.
-# 따라서 둘을 더한 '전체 매출'은 만들지 않고, 태그로 채널을 명확히 분리해 봅니다.
-sales_title_col, sales_filter_col = st.columns([4, 2])
-with sales_title_col:
-    st.markdown("#### 💰 매출 요약")
-with sales_filter_col:
-    selected_sales_channel = st.radio(
-        "매출 채널",
-        ["공식몰", "스마트스토어"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="sales_channel_filter",
-    )
+# 사이드바 브랜드 필터에서 선택된 채널만 같은 매출 요약 영역에 함께 표시합니다.
+st.markdown("#### 💰 매출 요약")
 
-if selected_sales_channel == "공식몰":
+if has_official_selection and has_smartstore_selection:
     st.caption(
-        "※ 공식몰 데이터만 표시합니다. 공식몰 실매출은 '브랜드별 매출 통계'의 "
-        "신규 구매 + 재 구매 - 정기구독 할인금액 기준입니다."
+        "※ 공식몰과 스마트스토어 매출은 서로 다른 원천 데이터이며 합산 KPI로 뭉치지 않고 나란히 표시합니다. "
+        "스마트스토어는 제품별 판매금액(순)을 사용합니다."
     )
-
-    m1, sep1, m2, m3, m4, sep2, m5 = st.columns(
-        [1.25, 0.06, 1.15, 1.15, 1.15, 0.06, 1.15]
-    )
-
+    m1, m2, m3, m4, m5 = st.columns(5)
     if cur_official_actual is not None:
         m1.metric(
             "🔥 공식몰 실매출",
@@ -852,14 +1037,47 @@ if selected_sales_channel == "공식몰":
         )
     else:
         m1.metric("🔥 공식몰 실매출", "데이터 없음")
-
-    with sep1:
-        st.markdown(
-            "<div style='border-left:1px solid #D9D9D9;height:92px;"
-            "margin:6px auto 0 auto;width:1px;'></div>",
-            unsafe_allow_html=True,
+    if cur_smartstore_actual is not None:
+        m2.metric(
+            "🟢 스마트스토어 순판매금액",
+            format_currency(cur_smartstore_actual),
+            delta=calculate_delta(cur_smartstore_actual, prev_smartstore_actual),
         )
+    else:
+        m2.metric("🟢 스마트스토어 순판매금액", "데이터 없음")
+    m3.metric(
+        "📊 공식몰 로그 매출",
+        format_currency(cur_log_total_rev),
+        delta=calculate_delta(cur_log_total_rev, prev_log_total_rev),
+    )
+    if has_official_sales_data:
+        m4.metric(
+            "🔄 정기구독",
+            format_currency(cur_subscription_log),
+            delta=calculate_delta(cur_subscription_log, prev_subscription_log),
+        )
+    else:
+        m4.metric("🔄 정기구독", "데이터 없음")
+    m5.metric(
+        "🟢 스마트스토어 방문수",
+        format_number(cur_smart_visits),
+        delta=calculate_delta(cur_smart_visits, prev_smart_visits),
+    )
 
+elif has_official_selection:
+    st.caption(
+        "※ 공식몰 데이터만 표시합니다. 공식몰 실매출은 '브랜드별 매출 통계'의 "
+        "신규 구매 + 재 구매 - 정기구독 할인금액 기준입니다."
+    )
+    m1, m2, m3, m4, m5 = st.columns(5)
+    if cur_official_actual is not None:
+        m1.metric(
+            "🔥 공식몰 실매출",
+            format_currency(cur_official_actual),
+            delta=calculate_delta(cur_official_actual, prev_official_actual),
+        )
+    else:
+        m1.metric("🔥 공식몰 실매출", "데이터 없음")
     m2.metric(
         "📊 로그 매출 합계",
         format_currency(cur_log_total_rev),
@@ -875,14 +1093,6 @@ if selected_sales_channel == "공식몰":
         format_currency(cur_log_return_rev),
         delta=calculate_delta(cur_log_return_rev, prev_log_return_rev),
     )
-
-    with sep2:
-        st.markdown(
-            "<div style='border-left:1px solid #D9D9D9;height:92px;"
-            "margin:6px auto 0 auto;width:1px;'></div>",
-            unsafe_allow_html=True,
-        )
-
     if has_official_sales_data:
         m5.metric(
             "🔄 정기구독",
@@ -894,55 +1104,76 @@ if selected_sales_channel == "공식몰":
 
 else:
     st.caption(
-        "※ 스마트스토어 데이터만 표시합니다. H열 그룹상품명으로 셀티아이 / 트리어드 / 기타를 분류하고, "
-        "O열 판매금액(순)만 합산합니다. H열이 '전체'인 행은 중복 방지를 위해 집계에서 제외합니다. "
-        "공식몰 실매출·로그 매출·정기구독 데이터와는 합산하지 않습니다."
+        "※ 스마트스토어 제품행만 표시합니다. H열 그룹상품명 / O열 판매금액(순) / "
+        "W열 방문수 / X열 구매전환율을 사용하며, H열 '전체' 행은 중복 방지를 위해 집계에서 제외합니다."
     )
-
-    # 현재 브랜드 필터가 적용된 스마트스토어 총매출
-    cur_smart_total = df_smart_current["스마트스토어_순판매금액"].sum()
-    prev_smart_total = df_smart_prev["스마트스토어_순판매금액"].sum()
-
-    # 제품 분류가 핵심이므로 스마트스토어에서는 브랜드별 순판매금액을 함께 보여줍니다.
-    def smart_brand_sum(df, brand_name):
-        return df.loc[
-            df["브랜드"].eq(brand_name), "스마트스토어_순판매금액"
-        ].sum()
-
-    cur_smart_cellti = smart_brand_sum(df_smart_current, "셀티아이")
-    prev_smart_cellti = smart_brand_sum(df_smart_prev, "셀티아이")
-    cur_smart_triad = smart_brand_sum(df_smart_current, "트리어드")
-    prev_smart_triad = smart_brand_sum(df_smart_prev, "트리어드")
-    cur_smart_other = smart_brand_sum(df_smart_current, "기타")
-    prev_smart_other = smart_brand_sum(df_smart_prev, "기타")
-
     s1, s2, s3, s4 = st.columns(4)
-    if has_smartstore_sales_data:
+    if cur_smartstore_actual is not None:
         s1.metric(
-            "🔥 스마트스토어 순판매금액",
-            format_currency(cur_smart_total),
-            delta=calculate_delta(cur_smart_total, prev_smart_total),
-        )
-        s2.metric(
-            "셀티아이",
-            format_currency(cur_smart_cellti),
-            delta=calculate_delta(cur_smart_cellti, prev_smart_cellti),
-        )
-        s3.metric(
-            "트리어드",
-            format_currency(cur_smart_triad),
-            delta=calculate_delta(cur_smart_triad, prev_smart_triad),
-        )
-        s4.metric(
-            "기타",
-            format_currency(cur_smart_other),
-            delta=calculate_delta(cur_smart_other, prev_smart_other),
+            "🟢 스마트스토어 순판매금액",
+            format_currency(cur_smartstore_actual),
+            delta=calculate_delta(cur_smartstore_actual, prev_smartstore_actual),
         )
     else:
-        s1.metric("🔥 스마트스토어 순판매금액", "데이터 없음")
-        s2.metric("셀티아이", "데이터 없음")
-        s3.metric("트리어드", "데이터 없음")
-        s4.metric("기타", "데이터 없음")
+        s1.metric("🟢 스마트스토어 순판매금액", "데이터 없음")
+    s2.metric(
+        "방문수",
+        format_number(cur_smart_visits),
+        delta=calculate_delta(cur_smart_visits, prev_smart_visits),
+    )
+    s3.metric(
+        "구매전환율",
+        f"{cur_smart_conv:.1f}%" if cur_smart_conv is not None else "데이터 없음",
+        delta=(
+            f"{cur_smart_conv - prev_smart_conv:+.1f}%p"
+            if cur_smart_conv is not None and prev_smart_conv is not None
+            else None
+        ),
+    )
+    s4.metric("상품 수", format_number(df_smart_current["상품"].nunique()))
+
+
+if has_smartstore_selection:
+    with st.expander("🟢 스마트스토어 제품별 데이터 보기"):
+        product_view = (
+            df_smart_current.groupby(["브랜드", "상품"], as_index=False)[
+                [
+                    "스마트스토어_순판매금액",
+                    "스마트스토어_방문수",
+                    "_스마트스토어_전환기여",
+                ]
+            ]
+            .sum()
+        )
+        if not product_view.empty:
+            product_view["구매전환율"] = (
+                product_view["_스마트스토어_전환기여"]
+                .div(product_view["스마트스토어_방문수"].replace(0, pd.NA))
+                .mul(100)
+                .fillna(0)
+            )
+            product_view = product_view.rename(
+                columns={
+                    "상품": "상품명",
+                    "스마트스토어_순판매금액": "판매금액(순)",
+                    "스마트스토어_방문수": "방문수",
+                }
+            )[["브랜드", "상품명", "판매금액(순)", "방문수", "구매전환율"]]
+            product_view = product_view.sort_values("판매금액(순)", ascending=False)
+            st.dataframe(
+                product_view,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "브랜드": st.column_config.TextColumn("브랜드"),
+                    "상품명": st.column_config.TextColumn("상품명", width="large"),
+                    "판매금액(순)": st.column_config.NumberColumn("판매금액(순)", format="₩%d"),
+                    "방문수": st.column_config.NumberColumn("방문수", format="%d"),
+                    "구매전환율": st.column_config.NumberColumn("구매전환율", format="%.1f%%"),
+                },
+            )
+        else:
+            st.info("선택한 기간에 스마트스토어 제품 데이터가 없습니다.")
 
 st.markdown("---")
 
@@ -960,71 +1191,166 @@ with col_chart_opt:
         label_visibility="collapsed",
     )
 
-if time_agg == "일간":
-    df_trend = (
-        df_current.groupby(df_current["날짜"].dt.date)[
-            ["신규방문_총 방문수", "재방문_총 방문수", "총구매수"]
+def aggregate_official_trend(df, mode):
+    if df.empty:
+        return pd.DataFrame(
+            columns=["날짜", "신규방문_총 방문수", "재방문_총 방문수", "총구매수"]
+        )
+    if mode == "일간":
+        out = (
+            df.groupby(df["날짜"].dt.date)[
+                ["신규방문_총 방문수", "재방문_총 방문수", "총구매수"]
+            ]
+            .sum()
+            .reset_index()
+        )
+    elif mode == "주간":
+        out = (
+            df.groupby(df["날짜"].dt.to_period("W").apply(lambda r: r.start_time))[
+                ["신규방문_총 방문수", "재방문_총 방문수", "총구매수"]
+            ]
+            .sum()
+            .reset_index()
+        )
+        out["날짜"] = out["날짜"].dt.date
+    else:
+        out = (
+            df.groupby(df["날짜"].dt.to_period("M").apply(lambda r: r.start_time))[
+                ["신규방문_총 방문수", "재방문_총 방문수", "총구매수"]
+            ]
+            .sum()
+            .reset_index()
+        )
+        out["날짜"] = out["날짜"].dt.date
+    return out
+
+
+def aggregate_smartstore_trend(df, mode):
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "날짜",
+                "스마트스토어_방문수",
+                "스마트스토어_순판매금액",
+                "스마트스토어_구매전환율",
+            ]
+        )
+
+    temp = df.copy()
+    if mode == "일간":
+        temp["집계일"] = temp["날짜"].dt.date
+    elif mode == "주간":
+        temp["집계일"] = temp["날짜"].dt.to_period("W").apply(lambda r: r.start_time).dt.date
+    else:
+        temp["집계일"] = temp["날짜"].dt.to_period("M").apply(lambda r: r.start_time).dt.date
+
+    out = (
+        temp.groupby("집계일", as_index=False)[
+            [
+                "스마트스토어_방문수",
+                "스마트스토어_순판매금액",
+                "_스마트스토어_전환기여",
+            ]
         ]
         .sum()
-        .reset_index()
+        .rename(columns={"집계일": "날짜"})
     )
-elif time_agg == "주간":
-    df_trend = (
-        df_current.groupby(
-            df_current["날짜"].dt.to_period("W").apply(lambda r: r.start_time)
-        )[["신규방문_총 방문수", "재방문_총 방문수", "총구매수"]]
-        .sum()
-        .reset_index()
+    out["스마트스토어_구매전환율"] = (
+        out["_스마트스토어_전환기여"]
+        .div(out["스마트스토어_방문수"].replace(0, pd.NA))
+        .mul(100)
+        .fillna(0)
     )
-    df_trend["날짜"] = df_trend["날짜"].dt.date
-else:
-    df_trend = (
-        df_current.groupby(
-            df_current["날짜"].dt.to_period("M").apply(lambda r: r.start_time)
-        )[["신규방문_총 방문수", "재방문_총 방문수", "총구매수"]]
-        .sum()
-        .reset_index()
-    )
-    df_trend["날짜"] = df_trend["날짜"].dt.date
+    return out
+
+
+df_trend = aggregate_official_trend(df_current, time_agg)
+df_smart_trend = aggregate_smartstore_trend(df_smart_current, time_agg)
 
 fig_trend = go.Figure()
-fig_trend.add_trace(
-    go.Bar(
-        x=df_trend["날짜"],
-        y=df_trend["신규방문_총 방문수"],
-        name="신규 유입수",
-        marker_color="#82B1FF",
+
+# 공식몰: 기존 파란/하늘색 유지
+if has_official_selection and not df_trend.empty:
+    fig_trend.add_trace(
+        go.Bar(
+            x=df_trend["날짜"],
+            y=df_trend["신규방문_총 방문수"],
+            name="공식몰 신규 유입수",
+            marker_color="#82B1FF",
+        )
     )
-)
-fig_trend.add_trace(
-    go.Bar(
-        x=df_trend["날짜"],
-        y=df_trend["재방문_총 방문수"],
-        name="재방문 유입수",
-        marker_color="#304FFE",
+    fig_trend.add_trace(
+        go.Bar(
+            x=df_trend["날짜"],
+            y=df_trend["재방문_총 방문수"],
+            name="공식몰 재방문 유입수",
+            marker_color="#304FFE",
+        )
     )
-)
-fig_trend.add_trace(
-    go.Scatter(
-        x=df_trend["날짜"],
-        y=df_trend["총구매수"],
-        name="총 구매수",
-        mode="lines+markers",
-        yaxis="y2",
-        line=dict(color="#FF5252", width=2.5),
-        marker=dict(size=6),
+    fig_trend.add_trace(
+        go.Scatter(
+            x=df_trend["날짜"],
+            y=df_trend["총구매수"],
+            name="공식몰 총 구매수",
+            mode="lines+markers",
+            yaxis="y2",
+            line=dict(color="#FF5252", width=2.5),
+            marker=dict(size=6),
+        )
     )
-)
+
+# 스마트스토어: 녹색 계열로 명확히 구분
+if has_smartstore_selection and not df_smart_trend.empty:
+    fig_trend.add_trace(
+        go.Bar(
+            x=df_smart_trend["날짜"],
+            y=df_smart_trend["스마트스토어_방문수"],
+            name="스마트스토어 방문수",
+            marker_color="#4CAF50",
+            opacity=0.82,
+        )
+    )
+    fig_trend.add_trace(
+        go.Scatter(
+            x=df_smart_trend["날짜"],
+            y=df_smart_trend["스마트스토어_구매전환율"],
+            name="스마트스토어 구매전환율",
+            mode="lines+markers",
+            yaxis="y3",
+            line=dict(color="#1B5E20", width=2.5, dash="dot"),
+            marker=dict(size=6),
+            hovertemplate="%{y:.1f}%<extra>스마트스토어 구매전환율</extra>",
+        )
+    )
+
 fig_trend.update_layout(
     template="plotly_white",
     barmode="stack",
-    height=330,
-    yaxis=dict(title="유입수", side="left", showgrid=True, gridcolor="#f0f2f6"),
-    yaxis2=dict(title="구매건수", overlaying="y", side="right", showgrid=False),
-    legend=dict(
-        orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5
+    height=350,
+    yaxis=dict(title="방문수", side="left", showgrid=True, gridcolor="#f0f2f6"),
+    yaxis2=dict(
+        title="공식몰 구매건수",
+        overlaying="y",
+        side="right",
+        showgrid=False,
+        showticklabels=has_official_selection,
+        title_font=dict(color="#FF5252"),
     ),
-    margin=dict(l=0, r=0, t=10, b=0),
+    yaxis3=dict(
+        title="스마트스토어 구매전환율",
+        overlaying="y",
+        side="right",
+        anchor="free",
+        position=0.94,
+        showgrid=False,
+        ticksuffix="%",
+        showticklabels=has_smartstore_selection,
+        title_font=dict(color="#1B5E20"),
+    ),
+    legend=dict(
+        orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5
+    ),
+    margin=dict(l=0, r=70, t=10, b=0),
     hovermode="x unified",
 )
 st.plotly_chart(fig_trend, use_container_width=True)
@@ -1032,10 +1358,10 @@ st.plotly_chart(fig_trend, use_container_width=True)
 if not df_camp_all.empty:
     camp_df = df_camp_all.copy()
     camp_target_brands = set()
-    if "전체" in effective_brands:
+    if select_all_sources:
         camp_target_brands.update(["전체", "셀티아이", "트리어드"])
     else:
-        for b in effective_brands:
+        for b in selected_official_brands:
             if "셀티아이" in b:
                 camp_target_brands.add("셀티아이")
             if "트리어드" in b:
@@ -1072,337 +1398,348 @@ if not df_camp_all.empty:
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 고객 여정 퍼널
+# 공식몰 전용 분석 영역
 # ---------------------------------------------------------
-st.markdown("#### 🔽 고객 여정 퍼널")
-col_funnel1, col_funnel2 = st.columns(2)
+if has_official_selection:
+    # ---------------------------------------------------------
+    # 고객 여정 퍼널
+    # ---------------------------------------------------------
+    st.markdown("#### 🔽 고객 여정 퍼널")
+    col_funnel1, col_funnel2 = st.columns(2)
 
-cur_new_buy = (
-    df_current["신규방문_신규구매_건수"].sum()
-    + df_current["신규방문_재구매_건수"].sum()
-)
-prev_new_buy = (
-    df_prev["신규방문_신규구매_건수"].sum()
-    + df_prev["신규방문_재구매_건수"].sum()
-)
-cur_ret_buy = (
-    df_current["재방문_신규구매_건수"].sum()
-    + df_current["재방문_재구매_건수"].sum()
-)
-prev_ret_buy = (
-    df_prev["재방문_신규구매_건수"].sum()
-    + df_prev["재방문_재구매_건수"].sum()
-)
-
-funnel_new_y = ["1. 방문", "2. 관심", "3. 가입", "4. 구매시도", "5. 최종구매"]
-funnel_new_x = [
-    df_current["신규방문_총 방문수"].sum(),
-    df_current["신규방문_관심행동1"].sum(),
-    df_current["신규방문_회원가입"].sum(),
-    df_current["신규방문_구매시도"].sum(),
-    cur_new_buy,
-]
-funnel_new_prev = [
-    df_prev["신규방문_총 방문수"].sum(),
-    df_prev["신규방문_관심행동1"].sum(),
-    df_prev["신규방문_회원가입"].sum(),
-    df_prev["신규방문_구매시도"].sum(),
-    prev_new_buy,
-]
-funnel_new_diff = [c - p for c, p in zip(funnel_new_x, funnel_new_prev)]
-funnel_new_diff_txt = [
-    f"▲ {int(d):,}" if d > 0 else (f"▼ {int(abs(d)):,}" if d < 0 else "-")
-    for d in funnel_new_diff
-]
-
-fig_fnew = go.Figure(
-    go.Funnel(
-        y=funnel_new_y,
-        x=funnel_new_x,
-        textinfo="value+percent initial",
-        marker={"color": "#82B1FF"},
-        customdata=funnel_new_diff_txt,
-        hovertemplate="<b>%{y}</b><br>수치: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>",
+    cur_new_buy = (
+        df_current["신규방문_신규구매_건수"].sum()
+        + df_current["신규방문_재구매_건수"].sum()
     )
-)
-fig_fnew.update_layout(
-    template="plotly_white", margin=dict(t=30, b=0), height=300, title="신규방문 퍼널"
-)
-col_funnel1.plotly_chart(fig_fnew, use_container_width=True)
-
-funnel_ret_y = ["1. 방문", "2. 관심", "3. 가입", "4. 구매시도", "5. 최종구매"]
-funnel_ret_x = [
-    df_current["재방문_총 방문수"].sum(),
-    df_current["재방문_관심행동1"].sum(),
-    df_current["재방문_회원가입"].sum(),
-    df_current["재방문_구매시도"].sum(),
-    cur_ret_buy,
-]
-funnel_ret_prev = [
-    df_prev["재방문_총 방문수"].sum(),
-    df_prev["재방문_관심행동1"].sum(),
-    df_prev["재방문_회원가입"].sum(),
-    df_prev["재방문_구매시도"].sum(),
-    prev_ret_buy,
-]
-funnel_ret_diff = [c - p for c, p in zip(funnel_ret_x, funnel_ret_prev)]
-funnel_ret_diff_txt = [
-    f"▲ {int(d):,}" if d > 0 else (f"▼ {int(abs(d)):,}" if d < 0 else "-")
-    for d in funnel_ret_diff
-]
-
-fig_fret = go.Figure(
-    go.Funnel(
-        y=funnel_ret_y,
-        x=funnel_ret_x,
-        textinfo="value+percent initial",
-        marker={"color": "#304FFE"},
-        customdata=funnel_ret_diff_txt,
-        hovertemplate="<b>%{y}</b><br>수치: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>",
+    prev_new_buy = (
+        df_prev["신규방문_신규구매_건수"].sum()
+        + df_prev["신규방문_재구매_건수"].sum()
     )
-)
-fig_fret.update_layout(
-    template="plotly_white", margin=dict(t=30, b=0), height=300, title="재방문 퍼널"
-)
-col_funnel2.plotly_chart(fig_fret, use_container_width=True)
-
-st.markdown("---")
-
-# ---------------------------------------------------------
-# 주요 매체 Top 5
-# ---------------------------------------------------------
-st.markdown("#### 🏆 주요 매체 Top 5")
-col_top1, col_top2, col_top3 = st.columns(3)
-
-top_visit_cur = df_current.groupby("매체", observed=False)["총방문수"].sum().reset_index()
-top_visit_prev = (
-    df_prev.groupby("매체", observed=False)["총방문수"]
-    .sum()
-    .reset_index()
-    .rename(columns={"총방문수": "이전"})
-)
-top_visit = pd.merge(top_visit_cur, top_visit_prev, on="매체", how="left").fillna(0)
-top_visit["증감량"] = top_visit["총방문수"] - top_visit["이전"]
-top_visit["증감텍스트"] = top_visit["증감량"].apply(
-    lambda x: f"▲ {int(x):,}" if x > 0 else (f"▼ {int(abs(x)):,}" if x < 0 else "-")
-)
-top_visit = top_visit.sort_values(by="총방문수", ascending=True).tail(5)
-
-fig_top_visit = go.Figure(
-    go.Bar(
-        x=top_visit["총방문수"],
-        y=top_visit["매체"],
-        orientation="h",
-        marker_color="#B39DDB",
-        text=[f"{v:,.0f}" for v in top_visit["총방문수"]],
-        textposition="auto",
-        customdata=top_visit["증감텍스트"].tolist(),
-        hovertemplate="<b>%{y}</b><br>유입수: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>",
+    cur_ret_buy = (
+        df_current["재방문_신규구매_건수"].sum()
+        + df_current["재방문_재구매_건수"].sum()
     )
-)
-fig_top_visit.update_layout(
-    template="plotly_white",
-    title="1. 유입 기준",
-    margin=dict(t=30, l=0, r=0, b=0),
-    height=250,
-)
-col_top1.plotly_chart(fig_top_visit, use_container_width=True)
-
-top_signup_cur = df_current.groupby("매체", observed=False)["총회원가입"].sum().reset_index()
-top_signup_prev = (
-    df_prev.groupby("매체", observed=False)["총회원가입"]
-    .sum()
-    .reset_index()
-    .rename(columns={"총회원가입": "이전"})
-)
-top_signup = pd.merge(top_signup_cur, top_signup_prev, on="매체", how="left").fillna(0)
-top_signup["증감량"] = top_signup["총회원가입"] - top_signup["이전"]
-top_signup["증감텍스트"] = top_signup["증감량"].apply(
-    lambda x: f"▲ {int(x):,}" if x > 0 else (f"▼ {int(abs(x)):,}" if x < 0 else "-")
-)
-top_signup = top_signup.sort_values(by="총회원가입", ascending=True).tail(5)
-
-fig_top_signup = go.Figure(
-    go.Bar(
-        x=top_signup["총회원가입"],
-        y=top_signup["매체"],
-        orientation="h",
-        marker_color="#4DD0E1",
-        text=[f"{v:,.0f}" for v in top_signup["총회원가입"]],
-        textposition="auto",
-        customdata=top_signup["증감텍스트"].tolist(),
-        hovertemplate="<b>%{y}</b><br>가입수: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>",
+    prev_ret_buy = (
+        df_prev["재방문_신규구매_건수"].sum()
+        + df_prev["재방문_재구매_건수"].sum()
     )
-)
-fig_top_signup.update_layout(
-    template="plotly_white",
-    title="2. 가입 기준",
-    margin=dict(t=30, l=0, r=0, b=0),
-    height=250,
-)
-col_top2.plotly_chart(fig_top_signup, use_container_width=True)
 
-top_sales_cur = df_current.groupby("매체", observed=False)["총매출액"].sum().reset_index()
-top_sales_prev = (
-    df_prev.groupby("매체", observed=False)["총매출액"]
-    .sum()
-    .reset_index()
-    .rename(columns={"총매출액": "이전"})
-)
-top_sales = pd.merge(top_sales_cur, top_sales_prev, on="매체", how="left").fillna(0)
-top_sales["증감량"] = top_sales["총매출액"] - top_sales["이전"]
-top_sales["증감텍스트"] = top_sales["증감량"].apply(
-    lambda x: f"▲ ₩{int(x):,}" if x > 0 else (f"▼ ₩{int(abs(x)):,}" if x < 0 else "-")
-)
-top_sales = top_sales.sort_values(by="총매출액", ascending=True).tail(5)
-
-fig_top_sales = go.Figure(
-    go.Bar(
-        x=top_sales["총매출액"],
-        y=top_sales["매체"],
-        orientation="h",
-        marker_color="#F48FB1",
-        text=[f"₩{v:,.0f}" for v in top_sales["총매출액"]],
-        textposition="auto",
-        customdata=top_sales["증감텍스트"].tolist(),
-        hovertemplate="<b>%{y}</b><br>매출: ₩%{x:,.0f}<br>전기간 대비: %{customdata}<extra></extra>",
-    )
-)
-fig_top_sales.update_layout(
-    template="plotly_white",
-    title="3. 매체별 매출 기준",
-    margin=dict(t=30, l=0, r=0, b=0),
-    height=250,
-)
-col_top3.plotly_chart(fig_top_sales, use_container_width=True)
-
-st.markdown("---")
-
-# ---------------------------------------------------------
-# 매체 점유율 및 현황표
-# ---------------------------------------------------------
-st.markdown("#### 🎯 매체별 점유율 (유입 및 매출)")
-df_media_eff = (
-    df_current.groupby("매체", observed=False)[["총방문수", "총구매수", "총매출액"]]
-    .sum()
-    .reset_index()
-    .sort_values("총방문수", ascending=False)
-)
-col_pie1, col_pie2 = st.columns(2)
-
-with col_pie1:
-    fig_pie_visit = px.pie(
-        df_media_eff,
-        values="총방문수",
-        names="매체",
-        hole=0.4,
-        title="유입 점유율 (트래픽 비중)",
-        color_discrete_sequence=px.colors.sequential.Teal,
-    )
-    fig_pie_visit.update_traces(
-        textposition="inside", textinfo="percent+label", showlegend=False
-    )
-    fig_pie_visit.update_layout(
-        template="plotly_white", margin=dict(t=40, b=0, l=0, r=0), height=350
-    )
-    st.plotly_chart(fig_pie_visit, use_container_width=True)
-
-with col_pie2:
-    fig_pie_sales = px.pie(
-        df_media_eff,
-        values="총매출액",
-        names="매체",
-        hole=0.4,
-        title="매체별 매출 점유율",
-        color_discrete_sequence=px.colors.sequential.OrRd,
-    )
-    fig_pie_sales.update_traces(
-        textposition="inside",
-        textinfo="percent+label",
-        showlegend=False,
-        hovertemplate="<b>%{label}</b><br>매출: ₩%{value:,.0f}<br>비중: %{percent}<extra></extra>",
-    )
-    fig_pie_sales.update_layout(
-        template="plotly_white", margin=dict(t=40, b=0, l=0, r=0), height=350
-    )
-    st.plotly_chart(fig_pie_sales, use_container_width=True)
-
-st.markdown("---")
-
-st.markdown("#### 🔄 비교 기간 대비 매체 운영 현황")
-st.caption("※ 설정된 기간과 직전 동일 기간을 비교합니다.")
-
-df_curr_media = (
-    df_current.groupby("매체", observed=False)[["총방문수", "총매출액"]]
-    .sum()
-    .reset_index()
-    .rename(columns={"총방문수": "이번_유입수", "총매출액": "이번_매출"})
-)
-df_prev_media = (
-    df_prev.groupby("매체", observed=False)[["총방문수", "총매출액"]]
-    .sum()
-    .reset_index()
-    .rename(columns={"총방문수": "이전_유입수", "총매출액": "이전_매출"})
-)
-df_compare = pd.merge(df_prev_media, df_curr_media, on="매체", how="outer").fillna(0)
-
-
-def get_media_status(row):
-    if row["이전_유입수"] == 0 and row["이번_유입수"] > 0:
-        return "🆕 신규 진입"
-    elif row["이전_유입수"] > 0 and row["이번_유입수"] == 0:
-        return "⏸️ 운영 중단"
-    elif row["이번_유입수"] > row["이전_유입수"]:
-        return "🔼 유입 증가"
-    elif row["이번_유입수"] < row["이전_유입수"]:
-        return "🔽 유입 감소"
-    else:
-        return "▶️ 유지"
-
-
-df_compare["상태"] = df_compare.apply(get_media_status, axis=1)
-df_compare["유입_증감률(%)"] = df_compare.apply(
-    lambda r: (
-        (r["이번_유입수"] - r["이전_유입수"]) / r["이전_유입수"] * 100
-        if r["이전_유입수"] != 0
-        else 0
-    ),
-    axis=1,
-)
-df_compare["매출_증감률(%)"] = df_compare.apply(
-    lambda r: (
-        (r["이번_매출"] - r["이전_매출"]) / r["이전_매출"] * 100
-        if r["이전_매출"] != 0
-        else 0
-    ),
-    axis=1,
-)
-
-df_compare = df_compare[
-    [
-        "상태",
-        "매체",
-        "이전_유입수",
-        "이번_유입수",
-        "유입_증감률(%)",
-        "이전_매출",
-        "이번_매출",
-        "매출_증감률(%)",
+    funnel_new_y = ["1. 방문", "2. 관심", "3. 가입", "4. 구매시도", "5. 최종구매"]
+    funnel_new_x = [
+        df_current["신규방문_총 방문수"].sum(),
+        df_current["신규방문_관심행동1"].sum(),
+        df_current["신규방문_회원가입"].sum(),
+        df_current["신규방문_구매시도"].sum(),
+        cur_new_buy,
     ]
-].sort_values(by="이번_매출", ascending=False)
+    funnel_new_prev = [
+        df_prev["신규방문_총 방문수"].sum(),
+        df_prev["신규방문_관심행동1"].sum(),
+        df_prev["신규방문_회원가입"].sum(),
+        df_prev["신규방문_구매시도"].sum(),
+        prev_new_buy,
+    ]
+    funnel_new_diff = [c - p for c, p in zip(funnel_new_x, funnel_new_prev)]
+    funnel_new_diff_txt = [
+        f"▲ {int(d):,}" if d > 0 else (f"▼ {int(abs(d)):,}" if d < 0 else "-")
+        for d in funnel_new_diff
+    ]
 
-st.dataframe(
-    df_compare,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "상태": st.column_config.TextColumn("상태", width="medium"),
-        "매체": st.column_config.TextColumn("매체명", width="medium"),
-        "이전_유입수": st.column_config.NumberColumn("이전 유입", format="%d"),
-        "이번_유입수": st.column_config.NumberColumn("이번 유입", format="%d"),
-        "유입_증감률(%)": st.column_config.NumberColumn("유입 증감률", format="%.1f%%"),
-        "이전_매출": st.column_config.NumberColumn("이전 매출", format="₩%d"),
-        "이번_매출": st.column_config.NumberColumn("이번 매출", format="₩%d"),
-        "매출_증감률(%)": st.column_config.NumberColumn("매출 증감률", format="%.1f%%"),
-    },
-)
+    fig_fnew = go.Figure(
+        go.Funnel(
+            y=funnel_new_y,
+            x=funnel_new_x,
+            textinfo="value+percent initial",
+            marker={"color": "#82B1FF"},
+            customdata=funnel_new_diff_txt,
+            hovertemplate="<b>%{y}</b><br>수치: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>",
+        )
+    )
+    fig_fnew.update_layout(
+        template="plotly_white", margin=dict(t=30, b=0), height=300, title="신규방문 퍼널"
+    )
+    col_funnel1.plotly_chart(fig_fnew, use_container_width=True)
+
+    funnel_ret_y = ["1. 방문", "2. 관심", "3. 가입", "4. 구매시도", "5. 최종구매"]
+    funnel_ret_x = [
+        df_current["재방문_총 방문수"].sum(),
+        df_current["재방문_관심행동1"].sum(),
+        df_current["재방문_회원가입"].sum(),
+        df_current["재방문_구매시도"].sum(),
+        cur_ret_buy,
+    ]
+    funnel_ret_prev = [
+        df_prev["재방문_총 방문수"].sum(),
+        df_prev["재방문_관심행동1"].sum(),
+        df_prev["재방문_회원가입"].sum(),
+        df_prev["재방문_구매시도"].sum(),
+        prev_ret_buy,
+    ]
+    funnel_ret_diff = [c - p for c, p in zip(funnel_ret_x, funnel_ret_prev)]
+    funnel_ret_diff_txt = [
+        f"▲ {int(d):,}" if d > 0 else (f"▼ {int(abs(d)):,}" if d < 0 else "-")
+        for d in funnel_ret_diff
+    ]
+
+    fig_fret = go.Figure(
+        go.Funnel(
+            y=funnel_ret_y,
+            x=funnel_ret_x,
+            textinfo="value+percent initial",
+            marker={"color": "#304FFE"},
+            customdata=funnel_ret_diff_txt,
+            hovertemplate="<b>%{y}</b><br>수치: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>",
+        )
+    )
+    fig_fret.update_layout(
+        template="plotly_white", margin=dict(t=30, b=0), height=300, title="재방문 퍼널"
+    )
+    col_funnel2.plotly_chart(fig_fret, use_container_width=True)
+
+    st.markdown("---")
+
+    # ---------------------------------------------------------
+    # 주요 매체 Top 5
+    # ---------------------------------------------------------
+    st.markdown("#### 🏆 주요 매체 Top 5")
+    col_top1, col_top2, col_top3 = st.columns(3)
+
+    top_visit_cur = df_current.groupby("매체", observed=False)["총방문수"].sum().reset_index()
+    top_visit_prev = (
+        df_prev.groupby("매체", observed=False)["총방문수"]
+        .sum()
+        .reset_index()
+        .rename(columns={"총방문수": "이전"})
+    )
+    top_visit = pd.merge(top_visit_cur, top_visit_prev, on="매체", how="left").fillna(0)
+    top_visit["증감량"] = top_visit["총방문수"] - top_visit["이전"]
+    top_visit["증감텍스트"] = top_visit["증감량"].apply(
+        lambda x: f"▲ {int(x):,}" if x > 0 else (f"▼ {int(abs(x)):,}" if x < 0 else "-")
+    )
+    top_visit = top_visit.sort_values(by="총방문수", ascending=True).tail(5)
+
+    fig_top_visit = go.Figure(
+        go.Bar(
+            x=top_visit["총방문수"],
+            y=top_visit["매체"],
+            orientation="h",
+            marker_color="#B39DDB",
+            text=[f"{v:,.0f}" for v in top_visit["총방문수"]],
+            textposition="auto",
+            customdata=top_visit["증감텍스트"].tolist(),
+            hovertemplate="<b>%{y}</b><br>유입수: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>",
+        )
+    )
+    fig_top_visit.update_layout(
+        template="plotly_white",
+        title="1. 유입 기준",
+        margin=dict(t=30, l=0, r=0, b=0),
+        height=250,
+    )
+    col_top1.plotly_chart(fig_top_visit, use_container_width=True)
+
+    top_signup_cur = df_current.groupby("매체", observed=False)["총회원가입"].sum().reset_index()
+    top_signup_prev = (
+        df_prev.groupby("매체", observed=False)["총회원가입"]
+        .sum()
+        .reset_index()
+        .rename(columns={"총회원가입": "이전"})
+    )
+    top_signup = pd.merge(top_signup_cur, top_signup_prev, on="매체", how="left").fillna(0)
+    top_signup["증감량"] = top_signup["총회원가입"] - top_signup["이전"]
+    top_signup["증감텍스트"] = top_signup["증감량"].apply(
+        lambda x: f"▲ {int(x):,}" if x > 0 else (f"▼ {int(abs(x)):,}" if x < 0 else "-")
+    )
+    top_signup = top_signup.sort_values(by="총회원가입", ascending=True).tail(5)
+
+    fig_top_signup = go.Figure(
+        go.Bar(
+            x=top_signup["총회원가입"],
+            y=top_signup["매체"],
+            orientation="h",
+            marker_color="#4DD0E1",
+            text=[f"{v:,.0f}" for v in top_signup["총회원가입"]],
+            textposition="auto",
+            customdata=top_signup["증감텍스트"].tolist(),
+            hovertemplate="<b>%{y}</b><br>가입수: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>",
+        )
+    )
+    fig_top_signup.update_layout(
+        template="plotly_white",
+        title="2. 가입 기준",
+        margin=dict(t=30, l=0, r=0, b=0),
+        height=250,
+    )
+    col_top2.plotly_chart(fig_top_signup, use_container_width=True)
+
+    top_sales_cur = df_current.groupby("매체", observed=False)["총매출액"].sum().reset_index()
+    top_sales_prev = (
+        df_prev.groupby("매체", observed=False)["총매출액"]
+        .sum()
+        .reset_index()
+        .rename(columns={"총매출액": "이전"})
+    )
+    top_sales = pd.merge(top_sales_cur, top_sales_prev, on="매체", how="left").fillna(0)
+    top_sales["증감량"] = top_sales["총매출액"] - top_sales["이전"]
+    top_sales["증감텍스트"] = top_sales["증감량"].apply(
+        lambda x: f"▲ ₩{int(x):,}" if x > 0 else (f"▼ ₩{int(abs(x)):,}" if x < 0 else "-")
+    )
+    top_sales = top_sales.sort_values(by="총매출액", ascending=True).tail(5)
+
+    fig_top_sales = go.Figure(
+        go.Bar(
+            x=top_sales["총매출액"],
+            y=top_sales["매체"],
+            orientation="h",
+            marker_color="#F48FB1",
+            text=[f"₩{v:,.0f}" for v in top_sales["총매출액"]],
+            textposition="auto",
+            customdata=top_sales["증감텍스트"].tolist(),
+            hovertemplate="<b>%{y}</b><br>매출: ₩%{x:,.0f}<br>전기간 대비: %{customdata}<extra></extra>",
+        )
+    )
+    fig_top_sales.update_layout(
+        template="plotly_white",
+        title="3. 매체별 매출 기준",
+        margin=dict(t=30, l=0, r=0, b=0),
+        height=250,
+    )
+    col_top3.plotly_chart(fig_top_sales, use_container_width=True)
+
+    st.markdown("---")
+
+    # ---------------------------------------------------------
+    # 매체 점유율 및 현황표
+    # ---------------------------------------------------------
+    st.markdown("#### 🎯 매체별 점유율 (유입 및 매출)")
+    df_media_eff = (
+        df_current.groupby("매체", observed=False)[["총방문수", "총구매수", "총매출액"]]
+        .sum()
+        .reset_index()
+        .sort_values("총방문수", ascending=False)
+    )
+    col_pie1, col_pie2 = st.columns(2)
+
+    with col_pie1:
+        fig_pie_visit = px.pie(
+            df_media_eff,
+            values="총방문수",
+            names="매체",
+            hole=0.4,
+            title="유입 점유율 (트래픽 비중)",
+            color_discrete_sequence=px.colors.sequential.Teal,
+        )
+        fig_pie_visit.update_traces(
+            textposition="inside", textinfo="percent+label", showlegend=False
+        )
+        fig_pie_visit.update_layout(
+            template="plotly_white", margin=dict(t=40, b=0, l=0, r=0), height=350
+        )
+        st.plotly_chart(fig_pie_visit, use_container_width=True)
+
+    with col_pie2:
+        fig_pie_sales = px.pie(
+            df_media_eff,
+            values="총매출액",
+            names="매체",
+            hole=0.4,
+            title="매체별 매출 점유율",
+            color_discrete_sequence=px.colors.sequential.OrRd,
+        )
+        fig_pie_sales.update_traces(
+            textposition="inside",
+            textinfo="percent+label",
+            showlegend=False,
+            hovertemplate="<b>%{label}</b><br>매출: ₩%{value:,.0f}<br>비중: %{percent}<extra></extra>",
+        )
+        fig_pie_sales.update_layout(
+            template="plotly_white", margin=dict(t=40, b=0, l=0, r=0), height=350
+        )
+        st.plotly_chart(fig_pie_sales, use_container_width=True)
+
+    st.markdown("---")
+
+    st.markdown("#### 🔄 비교 기간 대비 매체 운영 현황")
+    st.caption("※ 설정된 기간과 직전 동일 기간을 비교합니다.")
+
+    df_curr_media = (
+        df_current.groupby("매체", observed=False)[["총방문수", "총매출액"]]
+        .sum()
+        .reset_index()
+        .rename(columns={"총방문수": "이번_유입수", "총매출액": "이번_매출"})
+    )
+    df_prev_media = (
+        df_prev.groupby("매체", observed=False)[["총방문수", "총매출액"]]
+        .sum()
+        .reset_index()
+        .rename(columns={"총방문수": "이전_유입수", "총매출액": "이전_매출"})
+    )
+    df_compare = pd.merge(df_prev_media, df_curr_media, on="매체", how="outer").fillna(0)
+
+
+    def get_media_status(row):
+        if row["이전_유입수"] == 0 and row["이번_유입수"] > 0:
+            return "🆕 신규 진입"
+        elif row["이전_유입수"] > 0 and row["이번_유입수"] == 0:
+            return "⏸️ 운영 중단"
+        elif row["이번_유입수"] > row["이전_유입수"]:
+            return "🔼 유입 증가"
+        elif row["이번_유입수"] < row["이전_유입수"]:
+            return "🔽 유입 감소"
+        else:
+            return "▶️ 유지"
+
+
+    df_compare["상태"] = df_compare.apply(get_media_status, axis=1)
+    df_compare["유입_증감률(%)"] = df_compare.apply(
+        lambda r: (
+            (r["이번_유입수"] - r["이전_유입수"]) / r["이전_유입수"] * 100
+            if r["이전_유입수"] != 0
+            else 0
+        ),
+        axis=1,
+    )
+    df_compare["매출_증감률(%)"] = df_compare.apply(
+        lambda r: (
+            (r["이번_매출"] - r["이전_매출"]) / r["이전_매출"] * 100
+            if r["이전_매출"] != 0
+            else 0
+        ),
+        axis=1,
+    )
+
+    df_compare = df_compare[
+        [
+            "상태",
+            "매체",
+            "이전_유입수",
+            "이번_유입수",
+            "유입_증감률(%)",
+            "이전_매출",
+            "이번_매출",
+            "매출_증감률(%)",
+        ]
+    ].sort_values(by="이번_매출", ascending=False)
+
+    st.dataframe(
+        df_compare,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "상태": st.column_config.TextColumn("상태", width="medium"),
+            "매체": st.column_config.TextColumn("매체명", width="medium"),
+            "이전_유입수": st.column_config.NumberColumn("이전 유입", format="%d"),
+            "이번_유입수": st.column_config.NumberColumn("이번 유입", format="%d"),
+            "유입_증감률(%)": st.column_config.NumberColumn("유입 증감률", format="%.1f%%"),
+            "이전_매출": st.column_config.NumberColumn("이전 매출", format="₩%d"),
+            "이번_매출": st.column_config.NumberColumn("이번 매출", format="₩%d"),
+            "매출_증감률(%)": st.column_config.NumberColumn("매출 증감률", format="%.1f%%"),
+        },
+    )
+
+else:
+    st.markdown("---")
+    st.info(
+        "스마트스토어 단독 선택 시에는 매체·신규/재방문·가입 단계 데이터가 없으므로 "
+        "공식몰 전용 퍼널/매체 분석은 표시하지 않습니다. 위의 스마트스토어 방문수·구매전환율·제품별 데이터를 확인해 주세요."
+    )
