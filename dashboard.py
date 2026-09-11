@@ -1273,6 +1273,45 @@ if has_smartstore_selection and not df_smart_trend.empty:
         )
     )
 
+# 공식몰 + 스마트스토어 구매 합계
+# 유입 막대가 스택으로 합계를 확인할 수 있는 것처럼,
+# 두 판매채널을 함께 보고 있을 때 구매 지표도 합계선을 추가합니다.
+if (
+    has_official_selection
+    and has_smartstore_selection
+    and not df_trend.empty
+    and not df_smart_trend.empty
+):
+    df_purchase_total = pd.merge(
+        df_trend[["날짜", "총구매수"]],
+        df_smart_trend[["날짜", "스마트스토어_결제상품수량"]],
+        on="날짜",
+        how="outer",
+    ).sort_values("날짜")
+    df_purchase_total["총구매수"] = df_purchase_total["총구매수"].fillna(0)
+    df_purchase_total["스마트스토어_결제상품수량"] = (
+        df_purchase_total["스마트스토어_결제상품수량"].fillna(0)
+    )
+    df_purchase_total["전체_구매합계"] = (
+        df_purchase_total["총구매수"]
+        + df_purchase_total["스마트스토어_결제상품수량"]
+    )
+
+    fig_trend.add_trace(
+        go.Scatter(
+            x=df_purchase_total["날짜"],
+            y=df_purchase_total["전체_구매합계"],
+            name="전체 구매 합계",
+            mode="lines+markers",
+            yaxis="y2",
+            line=dict(color="#263238", width=3.5),
+            marker=dict(size=7),
+            hovertemplate=(
+                "%{y:,.0f}<extra>공식몰 구매수 + 스마트스토어 결제상품수량</extra>"
+            ),
+        )
+    )
+
 fig_trend.update_layout(
     template="plotly_white",
     barmode="stack",
