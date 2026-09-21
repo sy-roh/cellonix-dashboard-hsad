@@ -757,9 +757,41 @@ df_smart_current = df_smart_filtered[
     & (df_smart_filtered["날짜"].dt.date <= end_date)
 ]
 
-duration = (end_date - start_date).days + 1
-prev_start_date = start_date - timedelta(days=duration)
-prev_end_date = start_date - timedelta(days=1)
+# ---------------------------------------------------------
+# 비교 기간: 전월의 동일 날짜 기준
+# 예)
+# - 9/1 ~ 9/20  → 8/1 ~ 8/20
+# - 9/1 ~ 9/30(9월 전체) → 8/1 ~ 8/31
+# - 2/1 ~ 2/28(2월 전체) → 1/1 ~ 1/31
+# ---------------------------------------------------------
+def shift_one_month_back(d):
+    """날짜를 전월의 같은 일자로 이동하되, 해당 일자가 없으면 전월 말일로 보정합니다."""
+    return (pd.Timestamp(d) - pd.DateOffset(months=1)).date()
+
+
+_current_start_ts = pd.Timestamp(start_date)
+_current_end_ts = pd.Timestamp(end_date)
+
+# 선택 구간이 '한 달 전체'인지 확인
+_is_full_month = (
+    start_date.day == 1
+    and start_date.year == end_date.year
+    and start_date.month == end_date.month
+    and end_date.day == _current_end_ts.days_in_month
+)
+
+prev_start_date = shift_one_month_back(start_date)
+
+if _is_full_month:
+    # 전체 월 선택 시 전월도 1일~말일까지 비교
+    _prev_month_ts = _current_start_ts - pd.DateOffset(months=1)
+    prev_end_date = (
+        _prev_month_ts + pd.offsets.MonthEnd(0)
+    ).date()
+else:
+    # 부분 기간 선택 시 같은 일자끼리 비교
+    prev_end_date = shift_one_month_back(end_date)
+
 df_prev = df_filtered[
     (df_filtered["날짜"].dt.date >= prev_start_date)
     & (df_filtered["날짜"].dt.date <= prev_end_date)
@@ -786,7 +818,7 @@ st.title(f"📈 셀로닉스 성과 대시보드 ({dashboard_filter_title})")
 # ---------------------------------------------------------
 # 상단 KPI
 # ---------------------------------------------------------
-st.caption(f"※ 비교 기간: 직전 동일 기간 ({prev_start_date} ~ {prev_end_date}) 대비")
+st.caption(f"※ 비교 기간: 전월 동일 날짜 ({prev_start_date} ~ {prev_end_date}) 대비")
 
 cur_official_visits = df_current["총방문수"].sum()
 prev_official_visits = df_prev["총방문수"].sum()
