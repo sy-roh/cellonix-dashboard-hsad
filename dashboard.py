@@ -1426,17 +1426,29 @@ if has_official_selection:
     # -------------------------
     # 신규방문 퍼널
     # -------------------------
-    funnel_new_y = ["1. 총방문수", "2. 관심", "3. 회원가입", "4. 구매시도", "5. 구매"]
+    funnel_new_y = [
+        "1. 총방문수",
+        "2. 최소움직임",
+        "3. 관심행동 1",
+        "4. 관심행동 2",
+        "5. 회원가입",
+        "6. 구매시도",
+        "7. 구매",
+    ]
     funnel_new_x = [
         df_current["신규방문_총 방문수"].sum(),
-        cur_new_interest,
+        cur_new_min_move,
+        cur_new_interest1,
+        cur_new_interest2,
         df_current["신규방문_회원가입"].sum(),
         df_current["신규방문_구매시도"].sum(),
         cur_new_buy,
     ]
     funnel_new_prev = [
         df_prev["신규방문_총 방문수"].sum(),
-        prev_new_interest,
+        prev_new_min_move,
+        prev_new_interest1,
+        prev_new_interest2,
         df_prev["신규방문_회원가입"].sum(),
         df_prev["신규방문_구매시도"].sum(),
         prev_new_buy,
@@ -1450,11 +1462,9 @@ if has_official_selection:
     # 괄호 안의 세부 항목은 차트 라벨에 넣지 않고 hover에서만 노출
     funnel_new_detail = [
         "",
-        (
-            f"<br>최소움직임: {cur_new_min_move:,.0f}"
-            f"<br>관심행동 1: {cur_new_interest1:,.0f}"
-            f"<br>관심행동 2: {cur_new_interest2:,.0f}"
-        ),
+        "",
+        "",
+        "",
         "",
         "",
         (
@@ -1484,24 +1494,36 @@ if has_official_selection:
         )
     )
     fig_fnew.update_layout(
-        template="plotly_white", margin=dict(t=30, b=0), height=300, title="신규방문 퍼널"
+        template="plotly_white", margin=dict(t=30, b=0), height=390, title="신규방문 퍼널"
     )
     col_funnel1.plotly_chart(fig_fnew, use_container_width=True)
 
     # -------------------------
     # 재방문 퍼널
     # -------------------------
-    funnel_ret_y = ["1. 총방문수", "2. 관심", "3. 회원가입", "4. 구매시도", "5. 구매"]
+    funnel_ret_y = [
+        "1. 총방문수",
+        "2. 최소움직임",
+        "3. 관심행동 1",
+        "4. 관심행동 2",
+        "5. 회원가입",
+        "6. 구매시도",
+        "7. 구매",
+    ]
     funnel_ret_x = [
         df_current["재방문_총 방문수"].sum(),
-        cur_ret_interest,
+        cur_ret_min_move,
+        cur_ret_interest1,
+        cur_ret_interest2,
         df_current["재방문_회원가입"].sum(),
         df_current["재방문_구매시도"].sum(),
         cur_ret_buy,
     ]
     funnel_ret_prev = [
         df_prev["재방문_총 방문수"].sum(),
-        prev_ret_interest,
+        prev_ret_min_move,
+        prev_ret_interest1,
+        prev_ret_interest2,
         df_prev["재방문_회원가입"].sum(),
         df_prev["재방문_구매시도"].sum(),
         prev_ret_buy,
@@ -1514,11 +1536,9 @@ if has_official_selection:
 
     funnel_ret_detail = [
         "",
-        (
-            f"<br>최소움직임: {cur_ret_min_move:,.0f}"
-            f"<br>관심행동 1: {cur_ret_interest1:,.0f}"
-            f"<br>관심행동 2: {cur_ret_interest2:,.0f}"
-        ),
+        "",
+        "",
+        "",
         "",
         "",
         (
@@ -1548,7 +1568,7 @@ if has_official_selection:
         )
     )
     fig_fret.update_layout(
-        template="plotly_white", margin=dict(t=30, b=0), height=300, title="재방문 퍼널"
+        template="plotly_white", margin=dict(t=30, b=0), height=390, title="재방문 퍼널"
     )
     col_funnel2.plotly_chart(fig_fret, use_container_width=True)
 
