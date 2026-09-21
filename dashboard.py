@@ -180,7 +180,9 @@ def load_data():
     # 대시보드에서 실제 사용하는 지표 컬럼은 통합 후 한 번에 숫자형으로 정리합니다.
     metric_cols = [
         "신규방문_총 방문수",
+        "신규방문_최소움직임",
         "신규방문_관심행동1",
+        "신규방문_관심행동2",
         "신규방문_회원가입",
         "신규방문_구매시도",
         "신규방문_신규구매_건수",
@@ -188,7 +190,9 @@ def load_data():
         "신규방문_재구매_건수",
         "신규방문_재구매_매출액",
         "재방문_총 방문수",
+        "재방문_최소움직임",
         "재방문_관심행동1",
+        "재방문_관심행동2",
         "재방문_회원가입",
         "재방문_구매시도",
         "재방문_신규구매_건수",
@@ -1381,34 +1385,58 @@ if has_official_selection:
     st.markdown("#### 🔽 고객 여정 퍼널")
     col_funnel1, col_funnel2 = st.columns(2)
 
-    cur_new_buy = (
-        df_current["신규방문_신규구매_건수"].sum()
-        + df_current["신규방문_재구매_건수"].sum()
-    )
-    prev_new_buy = (
-        df_prev["신규방문_신규구매_건수"].sum()
-        + df_prev["신규방문_재구매_건수"].sum()
-    )
-    cur_ret_buy = (
-        df_current["재방문_신규구매_건수"].sum()
-        + df_current["재방문_재구매_건수"].sum()
-    )
-    prev_ret_buy = (
-        df_prev["재방문_신규구매_건수"].sum()
-        + df_prev["재방문_재구매_건수"].sum()
-    )
+    # 구매 합계 및 구성
+    cur_new_new_buy = df_current["신규방문_신규구매_건수"].sum()
+    cur_new_repeat_buy = df_current["신규방문_재구매_건수"].sum()
+    cur_new_buy = cur_new_new_buy + cur_new_repeat_buy
 
-    funnel_new_y = ["1. 방문", "2. 관심", "3. 가입", "4. 구매시도", "5. 최종구매"]
+    prev_new_new_buy = df_prev["신규방문_신규구매_건수"].sum()
+    prev_new_repeat_buy = df_prev["신규방문_재구매_건수"].sum()
+    prev_new_buy = prev_new_new_buy + prev_new_repeat_buy
+
+    cur_ret_new_buy = df_current["재방문_신규구매_건수"].sum()
+    cur_ret_repeat_buy = df_current["재방문_재구매_건수"].sum()
+    cur_ret_buy = cur_ret_new_buy + cur_ret_repeat_buy
+
+    prev_ret_new_buy = df_prev["재방문_신규구매_건수"].sum()
+    prev_ret_repeat_buy = df_prev["재방문_재구매_건수"].sum()
+    prev_ret_buy = prev_ret_new_buy + prev_ret_repeat_buy
+
+    # 관심 합계 = 최소움직임 + 관심행동1 + 관심행동2
+    cur_new_min_move = df_current["신규방문_최소움직임"].sum()
+    cur_new_interest1 = df_current["신규방문_관심행동1"].sum()
+    cur_new_interest2 = df_current["신규방문_관심행동2"].sum()
+    cur_new_interest = cur_new_min_move + cur_new_interest1 + cur_new_interest2
+
+    prev_new_min_move = df_prev["신규방문_최소움직임"].sum()
+    prev_new_interest1 = df_prev["신규방문_관심행동1"].sum()
+    prev_new_interest2 = df_prev["신규방문_관심행동2"].sum()
+    prev_new_interest = prev_new_min_move + prev_new_interest1 + prev_new_interest2
+
+    cur_ret_min_move = df_current["재방문_최소움직임"].sum()
+    cur_ret_interest1 = df_current["재방문_관심행동1"].sum()
+    cur_ret_interest2 = df_current["재방문_관심행동2"].sum()
+    cur_ret_interest = cur_ret_min_move + cur_ret_interest1 + cur_ret_interest2
+
+    prev_ret_min_move = df_prev["재방문_최소움직임"].sum()
+    prev_ret_interest1 = df_prev["재방문_관심행동1"].sum()
+    prev_ret_interest2 = df_prev["재방문_관심행동2"].sum()
+    prev_ret_interest = prev_ret_min_move + prev_ret_interest1 + prev_ret_interest2
+
+    # -------------------------
+    # 신규방문 퍼널
+    # -------------------------
+    funnel_new_y = ["1. 총방문수", "2. 관심", "3. 회원가입", "4. 구매시도", "5. 구매"]
     funnel_new_x = [
         df_current["신규방문_총 방문수"].sum(),
-        df_current["신규방문_관심행동1"].sum(),
+        cur_new_interest,
         df_current["신규방문_회원가입"].sum(),
         df_current["신규방문_구매시도"].sum(),
         cur_new_buy,
     ]
     funnel_new_prev = [
         df_prev["신규방문_총 방문수"].sum(),
-        df_prev["신규방문_관심행동1"].sum(),
+        prev_new_interest,
         df_prev["신규방문_회원가입"].sum(),
         df_prev["신규방문_구매시도"].sum(),
         prev_new_buy,
@@ -1419,14 +1447,40 @@ if has_official_selection:
         for d in funnel_new_diff
     ]
 
+    # 괄호 안의 세부 항목은 차트 라벨에 넣지 않고 hover에서만 노출
+    funnel_new_detail = [
+        "",
+        (
+            f"<br>최소움직임: {cur_new_min_move:,.0f}"
+            f"<br>관심행동 1: {cur_new_interest1:,.0f}"
+            f"<br>관심행동 2: {cur_new_interest2:,.0f}"
+        ),
+        "",
+        "",
+        (
+            f"<br>신규구매: {cur_new_new_buy:,.0f}"
+            f"<br>재구매: {cur_new_repeat_buy:,.0f}"
+        ),
+    ]
+    funnel_new_custom = [
+        [diff, detail]
+        for diff, detail in zip(funnel_new_diff_txt, funnel_new_detail)
+    ]
+
     fig_fnew = go.Figure(
         go.Funnel(
             y=funnel_new_y,
             x=funnel_new_x,
             textinfo="value+percent initial",
             marker={"color": "#82B1FF"},
-            customdata=funnel_new_diff_txt,
-            hovertemplate="<b>%{y}</b><br>수치: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>",
+            customdata=funnel_new_custom,
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "수치: %{x:,}"
+                "%{customdata[1]}<br>"
+                "전기간 대비: %{customdata[0]}"
+                "<extra></extra>"
+            ),
         )
     )
     fig_fnew.update_layout(
@@ -1434,17 +1488,20 @@ if has_official_selection:
     )
     col_funnel1.plotly_chart(fig_fnew, use_container_width=True)
 
-    funnel_ret_y = ["1. 방문", "2. 관심", "3. 가입", "4. 구매시도", "5. 최종구매"]
+    # -------------------------
+    # 재방문 퍼널
+    # -------------------------
+    funnel_ret_y = ["1. 총방문수", "2. 관심", "3. 회원가입", "4. 구매시도", "5. 구매"]
     funnel_ret_x = [
         df_current["재방문_총 방문수"].sum(),
-        df_current["재방문_관심행동1"].sum(),
+        cur_ret_interest,
         df_current["재방문_회원가입"].sum(),
         df_current["재방문_구매시도"].sum(),
         cur_ret_buy,
     ]
     funnel_ret_prev = [
         df_prev["재방문_총 방문수"].sum(),
-        df_prev["재방문_관심행동1"].sum(),
+        prev_ret_interest,
         df_prev["재방문_회원가입"].sum(),
         df_prev["재방문_구매시도"].sum(),
         prev_ret_buy,
@@ -1455,14 +1512,39 @@ if has_official_selection:
         for d in funnel_ret_diff
     ]
 
+    funnel_ret_detail = [
+        "",
+        (
+            f"<br>최소움직임: {cur_ret_min_move:,.0f}"
+            f"<br>관심행동 1: {cur_ret_interest1:,.0f}"
+            f"<br>관심행동 2: {cur_ret_interest2:,.0f}"
+        ),
+        "",
+        "",
+        (
+            f"<br>신규구매: {cur_ret_new_buy:,.0f}"
+            f"<br>재구매: {cur_ret_repeat_buy:,.0f}"
+        ),
+    ]
+    funnel_ret_custom = [
+        [diff, detail]
+        for diff, detail in zip(funnel_ret_diff_txt, funnel_ret_detail)
+    ]
+
     fig_fret = go.Figure(
         go.Funnel(
             y=funnel_ret_y,
             x=funnel_ret_x,
             textinfo="value+percent initial",
             marker={"color": "#304FFE"},
-            customdata=funnel_ret_diff_txt,
-            hovertemplate="<b>%{y}</b><br>수치: %{x:,}<br>전기간 대비: %{customdata}<extra></extra>",
+            customdata=funnel_ret_custom,
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "수치: %{x:,}"
+                "%{customdata[1]}<br>"
+                "전기간 대비: %{customdata[0]}"
+                "<extra></extra>"
+            ),
         )
     )
     fig_fret.update_layout(
