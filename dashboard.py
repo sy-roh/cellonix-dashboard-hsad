@@ -88,8 +88,8 @@ def load_data():
     # - 브랜드별 매출 통계 : gid 1279114590
     # - 스마트스토어       : gid 61403901
     #
-    # '브랜드별 매출 통계'의 신규 구매 + 재 구매를 공식몰 매출 원천으로 사용하고,
-    # 정기구독 할인금액을 제외해 공식몰 실매출을 계산합니다.
+    # '브랜드별 매출 통계'의 신규 구매 + 재 구매를 공식몰 실매출 원천으로 사용합니다.
+    # 정기구독 할인금액은 별도 참고 지표로만 표시하며 실매출에서 다시 차감하지 않습니다.
     # 기존 Streamlit/GitHub 설정에 등록해 둔 구글시트 링크를 그대로 사용합니다.
     # secrets 예시:
     # gsheet_url = "https://docs.google.com/spreadsheets/d/...../edit..."
@@ -259,17 +259,13 @@ def load_data():
         df_sub["재구매_실매출"] = to_number(df_sub["재 구매"])
         df_sub["정기구독_금액"] = to_number(df_sub["정기구독 할인금액"])
 
-        # 신규 구매 + 재 구매 = 할인 차감 전 브랜드 매출
+        # 공식몰 실매출 = 신규 구매 + 재 구매
+        # 정기구독 할인금액은 이미 매출 집계에서 별도 항목이므로 실매출 계산에서 차감하지 않습니다.
         df_sub["브랜드_실매출"] = (
             df_sub["신규구매_실매출"]
             + df_sub["재구매_실매출"]
         )
-
-        # 실제 공식몰 실매출 = 브랜드 매출 - 정기구독 할인금액
-        df_sub["공식몰_실매출"] = (
-            df_sub["브랜드_실매출"]
-            - df_sub["정기구독_금액"]
-        )
+        df_sub["공식몰_실매출"] = df_sub["브랜드_실매출"]
 
         df_sub = df_sub[
             df_sub["날짜"].notna()
@@ -962,10 +958,10 @@ if has_official_sales_data:
     cur_official_actual = df_sub_current["공식몰_실매출"].sum()
     prev_official_actual = df_sub_prev["공식몰_실매출"].sum()
 
-    # 안전 검증: 공식몰 실매출 = 신규 구매 + 재 구매 - 정기구독 할인금액
-    # 아래 두 값은 원칙적으로 동일해야 합니다.
-    cur_official_check = cur_official_gross - cur_subscription_log
-    prev_official_check = prev_official_gross - prev_subscription_log
+    # 안전 검증: 공식몰 실매출 = 신규 구매 + 재 구매
+    # 정기구독 할인금액은 실매출에서 추가 차감하지 않습니다.
+    cur_official_check = cur_official_gross
+    prev_official_check = prev_official_gross
 else:
     cur_subscription_log = None
     prev_subscription_log = None
@@ -1032,7 +1028,7 @@ if has_official_selection and has_smartstore_selection:
 elif has_official_selection:
     st.caption(
         "※ 공식몰 데이터만 표시합니다. 공식몰 실매출은 '브랜드별 매출 통계'의 "
-        "신규 구매 + 재 구매 - 정기구독 할인금액 기준입니다."
+        "신규 구매 + 재 구매 기준이며, 정기구독 할인금액은 별도 지표로만 표시합니다."
     )
     m1, m2, m3, m4, m5 = st.columns(5)
     if cur_official_actual is not None:
